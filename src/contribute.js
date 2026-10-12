@@ -271,11 +271,11 @@ export async function reviewAndMergePRs() {
       'pr', 'list',
       '--repo', info.upstream,
       '--state', 'open',
-      '--json', 'number,title,statusCheckRollup,url,additions,deletions,changedFiles,author,isCrossRepository',
+      '--json', 'number,title,statusCheckRollup,url,additions,deletions,changedFiles,author,isCrossRepository,mergeable,mergeStateStatus',
       '--limit', '50',
     );
     const prs = JSON.parse(raw || '[]');
-    const merged = [], closed = [], skipped = [];
+    const merged = [], closed = [], skipped = [], conflicts = [];
 
     for (const pr of prs) {
       const who = pr.author?.login ? `@${pr.author.login}` : 'unknown';
@@ -300,24 +300,36 @@ export async function reviewAndMergePRs() {
         : false;
       const noChecksYet = checks.length === 0;
 
-      if (reviewPassed) {
-        // Useful + security gate green → merge (works for fork PRs too), forcing past stuck automerge.
-        try {
-          await gh('pr', 'merge', '--merge', '--admin', String(pr.number), '--repo', info.upstream);
-          merged.push(`${pr.url} (${origin} by ${who})`);
-        } catch {
-          try { await gh('pr', 'merge', '--merge', '--auto', String(pr.number), '--repo', info.upstream); merged.push(`${pr.url} (${origin} by ${who})`); }
-          catch { skipped.push(`${pr.url} (${origin} by ${who} — merge blocked)`); }
-        }
-      } else {
+      if (!reviewPassed) {
         // Security/review gate not green → never bypass it (protects everyone's data safety).
         skipped.push(`${pr.url} (${origin} by ${who}${noChecksYet ? ' — awaiting CI' + (approvedCI.length ? ' (approved, will run)' : '') : ' — review gate not green, not bypassed'})`);
+        continue;
+      }
+
+      // Security gate is green. Now handle mergeability.
+      // CONFLICTING → cannot merge as-is; flag for conflict resolution (handled by resolveAndMergePR).
+      if (pr.mergeable === 'CONFLICTING') {
+        conflicts.push(`${pr.url} (${origin} by ${who} — useful + security-passed, needs conflict resolution)`);
+        continue;
+      }
+      // BEHIND the base but not conflicting → update the branch (merge base in) so it can merge.
+      if (/BEHIND/i.test(pr.mergeStateStatus || '')) {
+        try { await gh('api', '--method', 'PUT', `repos/${info.upstream}/pulls/${pr.number}/update-branch`); } catch {}
+      }
+
+      // Useful + security gate green + mergeable → merge (works for fork PRs too), force past stuck automerge.
+      try {
+        await gh('pr', 'merge', '--merge', '--admin', String(pr.number), '--repo', info.upstream);
+        merged.push(`${pr.url} (${origin} by ${who})`);
+      } catch {
+        try { await gh('pr', 'merge', '--merge', '--auto', String(pr.number), '--repo', info.upstream); merged.push(`${pr.url} (${origin} by ${who})`); }
+        catch { skipped.push(`${pr.url} (${origin} by ${who} — merge blocked)`); }
       }
     }
 
     // After merging PRs, pull the new commits into our local branch
     if (merged.length) await syncBranch().catch(() => {});
-    return { merged, closed, skipped, approvedCI };
+    return { merged, closed, skipped, conflicts, approvedCI };
   } catch (e) {
     return { merged: [], closed: [], skipped: [], reason: e.message };
   }
