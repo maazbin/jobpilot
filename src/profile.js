@@ -59,6 +59,12 @@ const DEFAULT_PROFILE = {
     minSalary: 0,
     locations: [],       // acceptable locations, empty = anywhere
     keywords: [],        // skill keywords for relevance
+    // Location scope for job search:
+    //   'worldwide' — open to any country (default)
+    //   'continent' — same continent as your location
+    //   'country'   — same country as your location only
+    //   'all'       — alias for worldwide (no filtering)
+    locationScope: 'worldwide',
   },
 
   // Answers to common application questions (agent uses semantically)

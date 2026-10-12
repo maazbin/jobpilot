@@ -55,11 +55,20 @@ The agent remembers what it couldn't do and gets better. **You** close the loop:
    recommended answer** drawn from the user's profile + free-form context (and marks the suggested
    choice for yes/no), so the user usually just confirms. It's reused (fuzzy-matched) on every
    future application. The agent also **auto-harvests** the user's own prefilled LinkedIn answers.
-4. **Contribute back (on by default).** JobPilot self-improves: it opens a **pull request to the
-   main repo** so everyone benefits (the user can toggle this off from the dashboard):
-   - `contribute_improvements` keeps the branch **in sync** (rebases on `upstream/main`), files
-     GitHub issues for recurring blockers, then opens a **PR** with allowlisted code/doc changes
-     (src/, docs, *.md). From a **fork**, the PR goes **upstream immediately** (cross-fork PR).
+4. **Contribute back — MANDATORY, after EVERY code/doc change.** JobPilot keeps itself and the
+   public repo in lockstep. This is not optional background behavior — treat it as part of
+   "done" for any change you make to the code:
+   - **If this is a FORK:** keep the branch **continuously in sync** with `upstream/main` (rebase),
+     and for every change you make, **open a PR to the main repo**. When a PR is merged upstream,
+     **sync again** so the fork tracks the newest version. Never let the fork drift.
+   - **If this is the MAIN repo:** keep **reviewing and merging open `self-evolve` PRs** that have
+     passed CI, then fast-forward local `main`. Do this on a loop — new PRs should not sit unmerged.
+   - **Every change the agent makes to code/docs must land on GitHub** via this flow — call
+     `contribute_improvements` after `resolve_encounter`, or let the worker's ~20-min loop do it.
+     Do not consider a code change complete until it is pushed / PR-opened.
+   - `contribute_improvements` (→ `contributeRound()` in `src/contribute.js`): **syncs upstream
+     first** (pulls the newest version), files GitHub issues for recurring blockers, then —
+     fork → opens a cross-fork PR to upstream; main → reviews + merges open self-evolve PRs.
    - It is **hard-guarded** — aborts if anything under `data/`, `.env*`, drafts, logs, screenshots,
      or the DB is ever staged. A CI **security gate** (`scripts/ci-security-scan.mjs`) re-checks this
      on every PR, and branch protection won't merge until it passes. Clean `self-evolve` PRs
@@ -69,6 +78,17 @@ The agent remembers what it couldn't do and gets better. **You** close the loop:
 
 ## Rules
 
+- **🔁 EVERY code/doc change MUST be reflected on GitHub — no exceptions.** This is a hard rule,
+  not a nice-to-have:
+  - **Fork** → stay in sync with `upstream/main` (rebase) at all times, and open a **PR to the
+    main repo** for every change. When your PR (or any PR) merges upstream, **sync again** to the
+    newest version. The fork must never fall behind main.
+  - **Main repo** → continuously **review and merge** open `self-evolve` PRs that passed CI, then
+    fast-forward `main`. Don't let PRs pile up.
+  - A change is only "done" once it's pushed / its PR is opened. After any `resolve_encounter` or
+    code edit, call `contribute_improvements` (or rely on the worker's ~20-min loop). It always
+    **pulls the newest upstream version first**, then contributes. Hard-guarded against ever
+    committing `data/`, `.env*`, or credentials.
 - **Never re-email / re-apply / re-connect.** `check_already_actioned` before outreach; the DB in
   `data/jobs.db` preserves history across runs and across different agents.
 - **Freshest first.** Prefer leads posted in the last 24h; the queues are already ordered that way.

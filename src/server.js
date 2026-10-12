@@ -127,10 +127,13 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && url.pathname === '/api/answers') {
       const { initDB } = await import('./tracker.js');
       await initDB();
-      const { learn } = await import('./evolve.js');
+      const { learn, answerByKey } = await import('./evolve.js');
       const body = JSON.parse((await readBody(req)).toString('utf8') || '{}');
       if (!body.answer) return json(res, 400, { ok: false, error: 'answer required' });
-      learn(body.question || body.qkey, body.answer, 'user');
+      // The dashboard sends the EXACT stored qkey — update that row in place so the
+      // parked question is actually cleared (no re-keying, no duplicate row).
+      if (body.qkey) answerByKey(body.qkey, body.answer, 'user');
+      else learn(body.question, body.answer, 'user');
       return json(res, 200, { ok: true });
     }
 
@@ -222,6 +225,13 @@ input:focus,textarea:focus{outline:none;border-color:#6366f1}
   <input type="text" id="skills" value="${(p.skills || []).join(', ')}" placeholder="Python, FastAPI, AWS, LLM, RAG">
   <label>Skip (comma-separated)</label>
   <input type="text" id="skip" value="${(p.preferences?.skip || []).join(', ')}" placeholder="junior, intern, sales">
+  <label>Location scope — how far should the agent search?</label>
+  <select id="locationScope" style="width:100%;background:#0f172a;border:1px solid #334155;border-radius:8px;padding:9px 12px;color:#e2e8f0;font-size:13px">
+    <option value="worldwide" ${(p.preferences?.locationScope||'worldwide')==='worldwide'?'selected':''}>🌍 Worldwide — apply to jobs anywhere</option>
+    <option value="all"       ${(p.preferences?.locationScope||'')==='all'      ?'selected':''}>🌐 All — same as worldwide, no filtering</option>
+    <option value="continent" ${(p.preferences?.locationScope||'')==='continent'?'selected':''}>🗺 Continent — same continent as my location</option>
+    <option value="country"   ${(p.preferences?.locationScope||'')==='country'  ?'selected':''}>📍 Country — same country as my location only</option>
+  </select>
   <label>Sites you're logged into (comma-separated)</label>
   <input type="text" id="sources" value="${(p.loggedInSources || []).join(', ')}" placeholder="linkedin, gmail">
 </div>
@@ -288,7 +298,7 @@ $('save').onclick = async () => {
     salary: { amount: parseInt($('salAmount').value) || 0, currency: (salCur[0] || '').toUpperCase(), period: salCur[1] || 'month' },
     workAuth: { needsSponsorship: sponsorVal === 'yes' ? true : sponsorVal === 'no' ? false : undefined, authorizedIn: parseList($('authIn').value) },
     links: { linkedin: $('linkedin').value, github: $('github').value, portfolio: $('portfolio').value, website: $('website').value },
-    preferences: { roles: parseList($('roles').value), skip: parseList($('skip').value) },
+    preferences: { roles: parseList($('roles').value), skip: parseList($('skip').value), locationScope: $('locationScope').value },
     loggedInSources: parseList($('sources').value),
     answers,
   };

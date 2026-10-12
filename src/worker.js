@@ -263,7 +263,7 @@ async function connector() {
 
 // ── dashboard + playbook + self-contribution refresher ──────────────────────────
 async function refresher() {
-  let lastContribute = 0, lastLoginCheck = 0;
+  let lastContribute = 0, lastLoginCheck = 0, lastSync = 0;
   while (running()) {
     try { writeDash(); writePlaybook(); } catch {}
     // Reconcile stale login banners with reality: if a site is FLAGGED but actually logged in
@@ -278,16 +278,37 @@ async function refresher() {
         if (v.linkedin || v.gmail) { writeDash(); say('main', `login reconciled → LinkedIn:${v.linkedin} Gmail:${v.gmail}`); }
       } catch {}
     }
-    // Every ~20 min: contribute improvements back to the public repo (issues + allowlisted
-    // code/doc changes). ON by default; hard-guarded against ever committing data/ or creds.
+    // Every ~10 min: KEEP SYNCING with the main repo (hard rule — see AGENTS.md).
+    //   Fork → rebase on upstream/main and push the fork current (move to the newer version).
+    //   Main → review + merge open self-evolve PRs that passed CI, then fast-forward main.
+    // This runs independently of the full contribute round so the branch never drifts.
+    if (!DRY && getProfile().consent?.autoContribute !== false && Date.now() - lastSync > 10 * 60000) {
+      lastSync = Date.now();
+      try {
+        const { syncBranch, repoInfo, reviewAndMergePRs } = await import('./contribute.js');
+        const info = await repoInfo();
+        const s = await syncBranch();
+        if (s.advanced) say('contribute', `pulled newer upstream version (now in sync with ${s.upstream || 'origin'})`);
+        if (!info.isFork) {
+          const rev = await reviewAndMergePRs();
+          if (rev.merged?.length) say('contribute', `reviewed + merged self-evolve PRs: ${rev.merged.join(', ')}`);
+        }
+      } catch (e) { say('contribute', 'sync skip: ' + e.message.slice(0, 80)); }
+    }
+    // Every ~20 min: full contribute round — sync first, file blocker issues, then open a PR
+    // (fork) or review+merge PRs (main). ON by default; hard-guarded against committing data/creds.
     if (!DRY && getProfile().consent?.autoContribute !== false && Date.now() - lastContribute > 20 * 60000) {
       lastContribute = Date.now();
       try {
         const { contributeRound } = await import('./contribute.js');
         const r = await contributeRound();
         if (r.issues?.filed?.length) say('contribute', `filed issues: ${r.issues.filed.join(', ')}`);
-        if (r.code?.pushed) say('contribute', `pushed improvements: ${r.code.files.join(', ')}`);
-        else if (r.code?.reason && r.code.reason !== 'nothing to contribute') say('contribute', r.code.reason);
+        // PR opened for local changes (fork → upstream, main → its own main)
+        if (r.pr?.pr) say('contribute', `opened self-evolve PR: ${r.pr.pr}`);
+        else if (r.pr?.reason && r.pr.reason !== 'nothing to contribute') say('contribute', r.pr.reason);
+        // Main-repo reviewer: merged open self-evolve PRs that passed CI
+        if (r.review?.merged?.length) say('contribute', `reviewed + merged self-evolve PRs: ${r.review.merged.join(', ')}`);
+        if (r.sync?.advanced) say('contribute', `synced to newer upstream version`);
       } catch (e) { say('contribute', 'skip: ' + e.message.slice(0, 80)); }
     }
     await SLEEP(20000);
