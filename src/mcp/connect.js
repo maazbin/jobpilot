@@ -310,7 +310,10 @@ export async function connect({ profileUrl, posterName, role, company, withNote 
     // The 2026 LinkedIn UI uses obfuscated gfl* class names — we can't rely on .artdeco-modal.
     // Cast a wide net: div[role="dialog"], native <dialog[open]>, any element with a dismiss/close
     // button indicating a modal overlay is open, or a role=dialog nested anywhere.
-    const inviteDlg = page.locator('div[role="dialog"], dialog[open], [data-test-modal], [data-artdeco-is-focused-dialog]').first();
+    // Hidden stale dialogs are often kept in the DOM by LinkedIn after a previous overlay.
+    // Selecting the first matching node could scope the send lookup to that hidden dialog and
+    // miss the live invite modal entirely. Restrict the candidate set to visible overlays.
+    const inviteDlg = page.locator('div[role="dialog"]:visible, dialog[open]:visible, [data-test-modal]:visible, [data-artdeco-is-focused-dialog]:visible').first();
     await inviteDlg.waitFor({ state: 'visible', timeout: 8000 }).catch(async () => {
       // 2026 LinkedIn may use a non-standard overlay without role=dialog.
       // Fall back: wait for any new visible button containing "send" text to appear.
