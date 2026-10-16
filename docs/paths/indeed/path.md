@@ -17,3 +17,20 @@ Normal window, debug port closed. Issue #1 stays open for the driven browser.
 | post-apply | The page says "Your application has been submitted" | — | success |
 
 Stops: "Additional Verification Required" when the debug port is open. A captcha challenge. The reCAPTCHA notice under the form is not that challenge. The review page is not success.
+
+## Discovery navigation (worker scout lane)
+
+Indeed walls cold scripted navigation. The scout's discovery step must NOT `page.goto()` the
+`/jobs?q=...` results URL (nor any `viewjob?jk=`). It reaches results the same way a human does:
+load `https://pk.indeed.com/`, fill the on-page search (`#text-input-what`, `#text-input-where` =
+`Pakistan`), click **Find jobs**. One persistent results tab is kept and re-read across cycles so
+re-navigation is rare.
+
+Cadence + backoff (see `src/mcp/indeed-easyapply.js`):
+- Normal discovery runs at most once every ~12 minutes (module-level min-interval gate).
+- On a Cloudflare wall it hard-backs-off: 20 → 40 → 60 min (cap 60), resetting to 0 after a clean
+  cycle. While cooling it returns immediately (`status:'cooling'`) and the scout logs
+  `[indeed] cooling … — skipping` WITHOUT navigating.
+- The first wall per cooldown period is recorded as an evolution encounter.
+- When the cooldown has hit the 60-min cap at least twice (persistent wall), the worker flags the
+  user via the dashboard login banner to open Indeed and clear the check manually. Never solve it.

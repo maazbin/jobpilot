@@ -19,6 +19,7 @@ import { applyForm } from './src/mcp/forms.js';
 import { connect as liConnect } from './src/mcp/connect.js';
 import { commentInterested } from './src/mcp/comment.js';
 import { liPosts, liJobs, hnHiring, redditHiring, publicBoards } from './src/mcp/sources.js';
+import { indeedEasyApplyListings } from './src/mcp/indeed-easyapply.js';
 import { initEvolve, pendingQuestions, allAnswers, learn, openEncounters, resolveEncounter, writePlaybook, strategyTable } from './src/evolve.js';
 import { buildQueries, buildListingQueries } from './src/mcp/queries.js';
 import { getEasyApplyLimit, setEasyApplyLimit, refreshEasyApplyLimitFromWeb } from './src/limits.js';
@@ -484,11 +485,12 @@ const TOOLS = [
   // ───────── Fresh, dated lead sources (newest first) ─────────
   {
     name: 'scrape_fresh',
-    description: "Pull the FRESHEST leads from a source, each stamped with posted_at so you can act newest-first. source: 'li_posts' (LinkedIn hiring posts, past 24h) | 'li_jobs' (LinkedIn Easy-Apply listings, 24h) | 'hn' (latest HN 'Who is hiring') | 'reddit' (r/forhire etc) | 'boards' (RemoteOK/Remotive/Jobicy/Himalayas). Returns leads with channel (email/easy_apply/form/connect), relevance, skip flag. Save with save_jobs.",
+    description: "Pull the FRESHEST leads from a source, each stamped with posted_at so you can act newest-first. source: 'li_posts' (LinkedIn hiring posts, past 24h) | 'li_jobs' (LinkedIn Easy-Apply listings, 24h) | 'indeed' (Indeed Pakistan 'Easily apply' listings) | 'hn' (latest HN 'Who is hiring') | 'reddit' (r/forhire etc) | 'boards' (RemoteOK/Remotive/Jobicy/Himalayas). Returns leads with channel (email/easy_apply/indeed_easy/form/connect), relevance, skip flag. Save with save_jobs.",
     inputSchema: { type: 'object', properties: { source: { type: 'string' }, query: { type: 'string' } }, required: ['source'] },
     handler: async ({ source, query }) => timed('scrape_fresh', `${source}:${query || ''}`, { source, query }, 0, async () => {
       const r = source === 'li_posts' ? await liPosts(query || 'hiring remote email cv')
         : source === 'li_jobs' ? await liJobs(query || 'AI Engineer')
+        : source === 'indeed' ? await indeedEasyApplyListings(query || 'AI Engineer')
         : source === 'hn' ? await hnHiring()
         : source === 'reddit' ? await redditHiring()
         : source === 'boards' ? await publicBoards()

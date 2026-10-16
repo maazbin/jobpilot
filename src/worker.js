@@ -15,6 +15,7 @@ import { initDB, upsertJobs, setStatus, setFields, bumpAttempt, logEmail, log, g
   alreadyEmailed, alreadyApplied, alreadyConnected, logConnect, rows, doneToday, isFakeEmail } from './tracker.js';
 import { liPosts, liJobs, hnHiring, publicBoards, relToIso } from './mcp/sources.js';
 import { easyApply } from './mcp/easyapply.js';
+import { indeedEasyApply, indeedEasyApplyListings } from './mcp/indeed-easyapply.js';
 import { applyForm } from './mcp/forms.js';
 import { connect } from './mcp/connect.js';
 import { commentInterested } from './mcp/comment.js';
@@ -28,6 +29,7 @@ import { buildQueries, buildListingQueries } from './mcp/queries.js';
 import { DATA } from './config.js';
 import { assessJob, cvAttachmentForJob, selectCvVariant } from './cv.js';
 import { getEasyApplyLimit, maybeRefreshEasyApplyLimit } from './limits.js';
+import { activeSources } from './apply-sources.js';
 
 const DRY = process.env.DRY === '1';
 // DATA-ONLY mode: when WORKER_DATA_ONLY=1 the worker runs ONLY the data lanes (scout + refresher)
@@ -41,7 +43,7 @@ const NO_EVOLVE = process.env.WORKER_NO_EVOLVE === '1';
 // user's Gmail carries no LinkedIn-restriction risk (only Gmail's own generous throttling), and
 // the user asked for the brain to decide pace, not a hardcoded number. The user can still set a
 // ceiling from the profile (limits.maxEmailsPerDay). Easy/form/connect keep account-safety caps.
-const DAILY = { email: 0, easy: 80, form: 30, connect: 18 };
+const DAILY = { email: 0, easy: 80, indeed_easy: 60, form: 30, connect: 18 };
 // Resolve the email daily cap from the profile at call time: 0, null, or absent → UNLIMITED.
 // A positive number is honored as a user-chosen ceiling. Non-numeric/garbage → unlimited.
 function emailDailyCap() {
@@ -52,8 +54,8 @@ function emailDailyCap() {
 // Relevance floors per channel. Lowered (per user request: "don't skip stuff") so fewer
 // borderline-but-real leads get dropped before we ever look at them — we'd rather see a
 // lead and let the CV/role guards decide than silently filter it out on a fuzzy score.
-const MIN_REL = { email: 0.15, easy_apply: 0.2, form: 0.25, connect: 0.3 };
-const MAX_AGE_DAYS = { email: 12, easy_apply: 4, form: 7, connect: 3 };
+const MIN_REL = { email: 0.15, easy_apply: 0.2, indeed_easy: 0.2, form: 0.25, connect: 0.3 };
+const MAX_AGE_DAYS = { email: 12, easy_apply: 4, indeed_easy: 4, form: 7, connect: 3 };
 // Per-lane pacing (ms, jittered). Heavy anti-restriction pacing is reserved for the Easy-Apply
 // path only (see easyApplyCooldownRange). The mailer has its OWN brisk pace (emailPaceRange,
 // profile knob limits.emailPaceMs) because email carries no LinkedIn-restriction risk — only
@@ -127,7 +129,7 @@ async function supervise(name, fn) {
 
 
 // When a site needs the user to (re)log in, surface a ONE-CLICK link on the dashboard.
-const LOGIN_URL = { LinkedIn: 'https://www.linkedin.com/login', Gmail: 'https://mail.google.com/' };
+const LOGIN_URL = { LinkedIn: 'https://www.linkedin.com/login', Gmail: 'https://mail.google.com/', Indeed: 'https://pk.indeed.com/' };
 function flagLogin(site, reason, url) {
   state.loginNeeded = state.loginNeeded || {};
   state.loginNeeded[site] = { url: url || LOGIN_URL[site] || '', reason: reason || '', ts: new Date().toISOString() };
@@ -272,12 +274,16 @@ async function scout() {
   let i = 0;
   while (running()) {
     try {
+      // Live board toggles, read once per loop (env → profile → all) so set_profile is honored
+      // on the next iteration. LI posts/jobs gate on `linkedin`, Indeed PK on `indeed`. HN/boards
+      // web discovery stays ALWAYS-ON (feeds email/form, no board dependence).
+      const active = activeSources(m => say('scout', m));
       const postQ = rankByUCB('post_query', buildQueries({ limit: 30 }));
       const jobQ = rankByUCB('job_query', buildListingQueries({ limit: 18 }));
 
       // 1) LinkedIn hiring POSTS — primary source (highest email yield), every loop.
       //    Skipped while LinkedIn needs a login (banner shown); re-probed every ~3 min.
-      if (!loginBackoff('LinkedIn')) {
+      if (active.has('linkedin') && !loginBackoff('LinkedIn')) {
         const q = postQ[0];
         beat('scout', `LI posts: ${q}`);
         const r = await liPosts(q, { datePosted: 'past-24h' });
@@ -305,9 +311,38 @@ async function scout() {
       }
       if (!running()) break;
 
-      // 3) LinkedIn job LISTINGS — secondary, only every OTHER loop (reduces LinkedIn load +
+      // 3) Indeed Pakistan "Easily apply" listings → indeed_easy leads for the applier.
+      //    Runs every loop, independent of LinkedIn login state (Indeed is its own session).
+      //    Navigates ONCE to the Pakistan Easy-Apply results page (never a viewjob URL) and, on
+      //    a Cloudflare wall, returns detail='wall' so we just move on and retry later.
+      // Glassdoor has no scout discovery step today (external/board-pages routed only); when one
+      // is added it MUST be gated behind active.has('glassdoor'). Indeed PK discovery is gated here.
+      if (active.has('indeed')) try {
+        const roles = getProfile().preferences?.roles || [];
+        const iq = roles[i % Math.max(1, roles.length)] || 'AI Engineer';
+        beat('scout', 'indeed: ' + iq);
+        const ri = await indeedEasyApplyListings(iq);
+        if (ri.status === 'ok') {
+          const { n } = ingest(ri.leads);
+          say('scout', `indeed "${iq}" +${n}`);
+          clearLogin('Indeed');                       // a clean cycle clears any stale banner
+        } else if (ri.status === 'cooling') {
+          // Cooling (wall backoff) OR min-interval throttle: do NOT navigate; just note and move on.
+          say('scout', `[indeed] ${ri.detail} — skipping`);
+        } else { // status === 'wall'
+          say('scout', `[indeed] ${ri.detail}`);
+          if (ri.persistentWall) {
+            flagLogin('Indeed', 'Indeed keeps hitting a Cloudflare check — open Indeed in the JobPilot Chrome window and clear the "Just a moment" check manually (do not let the worker solve it).');
+          }
+        }
+        // No per-step jitter needed beyond the module's own throttle, but keep the lane's pacing.
+        await jitter(PACE.scout);
+      } catch (e) { say('scout', 'indeed err ' + e.message.slice(0, 60)); }
+      if (!running()) break;
+
+      // 4) LinkedIn job LISTINGS — secondary, only every OTHER loop (reduces LinkedIn load +
       //    throttle risk; posts and the web carry the pipeline). Also gated on login.
-      if (i % 2 === 0 && !loginBackoff('LinkedIn')) {
+      if (active.has('linkedin') && i % 2 === 0 && !loginBackoff('LinkedIn')) {
         const jq = jobQ[0];
         beat('scout', `LI jobs: ${jq}`);
         const geoIds = getProfile().preferences?.locationScope === 'country' ? ['101022442'] : ['92000000', '101022442'];
@@ -398,12 +433,25 @@ async function applier() {
     const liCooling = Date.now() < liCooldownUntil || needsLogin('LinkedIn');
     // While LinkedIn is cooling down OR needs a login, only run the forms side (non-LinkedIn traffic).
     const emailBacklog = pendingEmailLeads();
-    const alternatingEasy = turn++ % 2 === 0;
     const emailFirst = getProfile().preferences?.outreachPriority === 'email_first';
-    const doEasy = liCooling ? false : (!emailFirst || emailBacklog === 0) && alternatingEasy;
-    if (emailFirst && emailBacklog > 0 && !doEasy) beat('applier', `email-first: ${emailBacklog} cold-email lead(s) pending`);
-    const chan = doEasy ? 'easy_apply' : 'form';
-    const capType = doEasy ? 'li_easy_apply' : 'portal_apply';
+    // 3-way rotation: LinkedIn easy (when not cooling) → indeed_easy → form. Indeed keeps
+    // submitting even while LinkedIn is throttled, interleaved newest-first with the existing
+    // channels and under the same anti-burst cooldowns. LinkedIn's cooldown logic is untouched.
+    const slot = turn++ % 3;
+    // Live board toggles (env JOBPILOT_APPLY_SOURCES → profile.preferences.applySources → all).
+    // Read every iteration so a set_profile change takes effect on the NEXT loop. A disabled
+    // board is simply never selected as the channel → it falls through to the next active channel
+    // and ultimately to `form`; no busy-spin, and the Easy-Apply cooldown/limit vars are untouched.
+    const active = activeSources(m => say('applier', m));
+    const liOn = active.has('linkedin');
+    const indeedOn = active.has('indeed');
+    const wantEasy = liOn && slot === 0 && !liCooling && (!emailFirst || emailBacklog === 0);
+    const wantIndeed = indeedOn && !wantEasy && (slot === 1 || (slot === 0 && liCooling));
+    if (emailFirst && emailBacklog > 0 && !wantEasy && !wantIndeed) beat('applier', `email-first: ${emailBacklog} cold-email lead(s) pending`);
+    const chan = wantEasy ? 'easy_apply' : wantIndeed ? 'indeed_easy' : 'form';
+    const doEasy = chan === 'easy_apply';
+    const doIndeed = chan === 'indeed_easy';
+    const capType = doEasy ? 'li_easy_apply' : doIndeed ? 'indeed_easy' : 'portal_apply';
     if (doEasy) {
       // Account-safety: stop Easy Apply at the 80% safety buffer of the (daily-refreshed) real
       // LinkedIn limit — well before the actual cap — to avoid a restriction. Email/forms/connect
@@ -417,7 +465,8 @@ async function applier() {
         await SLEEP(5000);
         continue;
       }
-    } else if (capLeft('form', capType) <= 0) { await SLEEP(60000); continue; }
+    } else if (doIndeed && capLeft('indeed_easy', 'indeed_easy') <= 0) { beat('applier', 'indeed daily cap'); await SLEEP(60000); continue; }
+    else if (!doIndeed && capLeft('form', capType) <= 0) { await SLEEP(60000); continue; }
     const list = queue(chan, 15).filter(j => !alreadyApplied(j.company, j.role));
     // A learned form-domain skip must not leave a relevant lead silently stuck
     // as `new`; surface it for manual review and only apply the learned skip to
@@ -465,6 +514,30 @@ async function applier() {
         if (!['applied', 'already_applied'].includes(r.result)) { easyFailStreak++; if (easyFailStreak >= 4) { liCooldownUntil = Date.now() + 30 * 60000; say('applier', '🛑 4 Easy Apply misses in a row — 30 min cooldown'); easyFailStreak = 0; } }
         log('li_easy_apply', j.company, j.role, j.url, r.result === 'applied' ? 'ok' : /needs_answers/.test(r.result) ? 'manual' : /already|no_easy|closed/.test(r.result) ? 'skip' : 'fail', `${r.result}: ${r.detail}`);
         say('applier', `⚡ ${r.result} → ${j.role} @ ${j.company}`);
+      } else if (doIndeed) {
+        // Indeed Pakistan smartapply. Same status mapping + anti-burst cooldown as LinkedIn.
+        // A Cloudflare wall OR a real review captcha (result 'captcha') is a cooldown trigger,
+        // NOT an attempt burn — the lead is left for retry / manual, never faked as submitted.
+        beat('applier', `🟦 indeed ${j.role} @ ${j.company}`);
+        const r = await indeedEasyApply({ url: j.apply_url || j.url, job: { ...j, role: j.role, company: j.company, description: j.description, jk: j.jk } });
+        if (r.result === 'applied' || r.result === 'already_applied') { setStatus(j.url, 'applied', r.detail); if (r.result === 'applied') appliedEasy = true; }
+        else if (r.result === 'captcha') {
+          say('applier', `🛡️ Indeed wall/captcha — short cooldown, lead left for retry/manual`);
+          beat('applier', 'indeed wall/captcha — cooldown');
+          await SLEEP(5 * 60000);
+        }
+        else if (r.result === 'no_easy_apply') { setStatus(j.url, 'needs_manual', r.externalUrl ? 'external: ' + r.externalUrl : 'no Indeed Easy Apply'); }
+        else if (r.result === 'needs_answers') {
+          if (requiresWorkAuthorization(r)) setStatus(j.url, 'skipped', 'skipped: work authorization/citizenship requirement');
+          else setStatus(j.url, 'needs_manual', r.detail);
+        }
+        else if (r.result === 'closed') setStatus(j.url, 'skipped', 'closed');
+        else if ((j.attempts || 0) + 1 >= 3) setStatus(j.url, 'failed', r.detail);
+        // Log with the SAME action type the daily-cap guard counts (capLeft('indeed_easy',
+        // 'indeed_easy') → doneToday('indeed_easy')). Mirrors the LinkedIn branch, where cap type
+        // and log type are both 'li_easy_apply', so the DAILY.indeed_easy=60 ceiling actually fires.
+        log('indeed_easy', j.company, j.role, j.url, r.result === 'applied' ? 'ok' : /needs_answers/.test(r.result) ? 'manual' : /already|no_easy|closed/.test(r.result) ? 'skip' : 'fail', `${r.result}: ${r.detail}`);
+        say('applier', `🟦 ${r.result} → ${j.role} @ ${j.company}`);
       } else {
         const target = j.apply_url || j.url;
         beat('applier', `📋 ${j.role} @ ${j.company}`);
@@ -659,6 +732,8 @@ if (!NO_EVOLVE) lanes.push(['evolver', evolver]);
 lanes.push(['refresher', refresher]);
 const laneNames = lanes.map(([n]) => n).join(' · ');
 say('main', `worker start${DRY ? ' (DRY)' : ''}${DATA_ONLY ? ' (DATA-ONLY — agent handles outreach)' : ''} — concurrent lanes: ${laneNames}`);
+// Display-only snapshot of the resolved active sources (lanes still re-resolve live each loop).
+say('main', `active apply sources: ${[...activeSources(m => say('main', m))].sort().join(', ')}`);
 say('main', `dashboard + Stop button live at http://127.0.0.1:${uiPort}`);
 beat('main', 'running', { uiPort, dataOnly: DATA_ONLY });
 // Watchdog: when the Stop flag appears (UI/CLI), exit the whole process promptly.
