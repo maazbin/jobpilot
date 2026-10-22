@@ -24,7 +24,11 @@ async function clickEasyApplyControl(page, control) {
   for (let attempt = 0; attempt < 2; attempt++) {
     if (!(await control.isVisible().catch(() => false))) break;
     try {
-      await control.click({ timeout: 5000 });
+      // LinkedIn's 2026 UI re-renders the Easy Apply button every frame (its componentkey
+      // changes on each paint), so Playwright's actionability "stable" gate times out even
+      // though the button is visible, enabled, in-viewport and un-obscured. force:true skips
+      // only the stability wait while still requiring the element to be present and visible.
+      await control.click({ timeout: 5000, force: true });
       return { ok: true };
     } catch (e) {
       lastError = e?.message || String(e);
