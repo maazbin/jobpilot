@@ -645,8 +645,12 @@ try {
   if (n) say('main', `revived ${n} email lead(s) stuck at the attempt cap (transient-fail self-heal)`);
 } catch {}
 // Keep the repo branch in sync with the main repo on startup (fork → rebase on upstream).
-if (!DRY && getProfile().consent?.autoContribute !== false) {
+// SKIPPED when NO_EVOLVE is set (data-only mode): the startup rebase/reset would otherwise wipe
+// local uncommitted/untracked changes — including the data-only + hook scripts — on every boot.
+if (!DRY && !NO_EVOLVE && getProfile().consent?.autoContribute !== false) {
   try { const { syncBranch } = await import('./contribute.js'); const s = await syncBranch(); say('main', `branch sync: ${s.synced ? 'in sync with ' + (s.upstream || 'origin') : 'skipped (' + (s.reason || '') + ')'}`); } catch {}
+} else if (NO_EVOLVE) {
+  say('main', 'data-only mode — skipping startup branch sync (local changes preserved)');
 }
 let uiPort = 7788;
 try { uiPort = await startServer() || 7788; } catch (e) { say('main', 'dashboard server issue (continuing): ' + (e.message || '').slice(0, 80)); }
