@@ -108,18 +108,31 @@ export function salaryFor(q, p, numeric = false) {
   if (!s) return numeric ? null : 'Negotiable';
 
   const baseCur = s.currency;                 // currency the stored figure is in
-  const cur = requestedCurrency(q, 'pkr');     // currency the QUESTION wants (PKR default)
+  const cur = requestedCurrency(q, baseCur);   // currency the QUESTION wants (stored currency default)
   const period = requestedPeriod(q, s.period || 'month');
   const basePeriod = s.period || 'month';
   const toMonthly = v => basePeriod === 'year' ? v / 12 : basePeriod === 'hour' ? v * 160 : v;
   const fromMonthly = v => period === 'year' ? v * 12 : period === 'hour' ? v / 160 : v;
-  // Convert from the stored currency to the requested currency via the USD table.
-  const convert = v => formatSalaryValue(fromMonthly(toMonthly(v) / (FX[baseCur] || 1) * (FX[cur] || 1)), cur, period);
+  // Convert from the stored currency to the requested currency via the USD table. When the
+  // question does not name a different currency, baseCur === cur and the factor is exactly 1 —
+  // so a PKR-stored / PKR-asked figure is NEVER multiplied (that FX hop produced the 56,000,000
+  // garbage: 200000 / FX.usd * FX.pkr). Real cross-currency questions keep the same ratio.
+  const fxFactor = baseCur === cur ? 1 : (FX[cur] || 1) / (FX[baseCur] || 1);
+  const convert = v => formatSalaryValue(fromMonthly(toMonthly(v) * fxFactor), cur, period);
+
+  // Guardrail: a salary answer can never exceed ~50× the stored monthly-equivalent expectation
+  // (converted to the same currency/period). If a stray FX hop ever yields an implausible
+  // magnitude, fall back to the direct no-FX figure instead of emitting an 8-digit number.
+  const expected = s.value || s.min || s.max || 0;
+  const sane = v => {
+    const band = formatSalaryValue(fromMonthly(toMonthly(expected)) * fxFactor, cur, period);
+    return band > 0 && v > band * 50 ? band : v;
+  };
 
   // Current-pay questions → single current figure. Expected → min (numeric) or min-max range.
-  if (s.isCurrent) return String(convert(s.value || s.min || 0));
-  const min = convert(s.min || s.value || 0);
-  const max = convert(s.max || s.min || 0);
+  if (s.isCurrent) return String(sane(convert(s.value || s.min || 0)));
+  const min = sane(convert(s.min || s.value || 0));
+  const max = sane(convert(s.max || s.min || 0));
   return numeric ? String(min) : (min === max ? String(min) : `${min}-${max}`);
 }
 

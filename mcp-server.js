@@ -16,6 +16,7 @@ import { scrapePublicSource, scrapeBrowserSite, scrapeLinkedInPosts, PUBLIC_SOUR
 import { fillAndSubmit, linkedinEasyApply, linkedinDM, linkedinConnect } from './src/mcp/apply.js';
 import { easyApply, inspectEasyApply, applyEasyApplyWithAnswers } from './src/mcp/easyapply.js';
 import { applyForm } from './src/mcp/forms.js';
+import { humanAssistedApply } from './src/mcp/human-assisted-apply.js';
 import { connect as liConnect } from './src/mcp/connect.js';
 import { commentInterested } from './src/mcp/comment.js';
 import { liPosts, liJobs, hnHiring, redditHiring, publicBoards } from './src/mcp/sources.js';
@@ -277,22 +278,16 @@ const TOOLS = [
       }));
     },
   },
-
   {
-    name: 'easyapply_inspect',
-    description: "Open a LinkedIn Easy Apply and return the FULL ordered field list across ALL pages WITHOUT submitting — each {question, type (text|long-text|single-choice|multi-choice|select|file), options, maxlength, required, page}. Use this to READ an unfamiliar form so YOU reason over every question with the user's CV + profile, then answer via easyapply_apply_with_answers. Every form differs: inspect first, think, then fill.",
-    inputSchema: { type: 'object', properties: { url: { type: 'string' } }, required: ['url'] },
-    handler: async ({ url }) => ok(await inspectEasyApply({ url })),
-  },
-  {
-    name: 'easyapply_apply_with_answers',
-    description: "Submit a LinkedIn Easy Apply using YOUR reasoned answers. `answers` maps each question's text (from easyapply_inspect) to your answer: a string for text/select/single-choice, an array (or comma string) for multi-choice (e.g. timezones — pick any; the user can work any). Omissions fall back to the built-in engine. Fills radios/checkboxes/selects/text robustly (handles 2026 empty-label 0x0 inputs), advances every page, submits, verifies. result: applied|stuck|already_applied|no_easy_apply|closed|error. On stuck it returns the blocking fields so you can refine and retry.",
-    inputSchema: { type: 'object', properties: { url: { type: 'string' }, answers: { type: 'object' }, dryRun: { type: 'boolean' } }, required: ['url', 'answers'] },
-    handler: async ({ url, answers = {}, dryRun = false }) => {
+    name: 'apply_human_assisted',
+    description: "Apply to an Indeed SmartApply / Glassdoor Easy Apply (SmartApply-backed) posting that is gated by a CAPTCHA / Cloudflare / 'verify you are human' check. Drives every non-human step (resume selection, questions, review, submit) automatically, but when a VISIBLE human-check appears it STOPS and returns result:'waiting_for_human' with the open tab URL — the USER clicks/solves it in the debug Chrome window, then you call this tool AGAIN with resume:true (same jobUrl) to continue. NEVER solves the CAPTCHA itself. result: submitted|waiting_for_human|needs_answers|no_apply|error.",
+    inputSchema: { type: 'object', properties: { jobUrl: { type: 'string' }, resume: { type: 'boolean' } }, required: ['jobUrl'] },
+    handler: async ({ jobUrl, resume = false }) => {
       const limit = getProfile().limits.maxAttemptsPerJob;
-      return ok(await timed('easyapply_apply_with_answers', url, { url }, limit, async () => {
-        const r = await applyEasyApplyWithAnswers({ url, answers, dryRun });
-        if (r.result === 'applied' || r.result === 'already_applied') setStatus(url, 'applied', r.detail);
+      return ok(await timed('apply_human_assisted', jobUrl, { jobUrl, resume }, limit, async () => {
+        const r = await humanAssistedApply({ jobUrl, resume });
+        if (r.result === 'submitted') setStatus(jobUrl, 'applied', r.detail);
+        else if (r.result === 'needs_answers') setStatus(jobUrl, 'needs_manual', r.detail);
         writeDash();
         return r;
       }));
