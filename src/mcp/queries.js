@@ -16,32 +16,67 @@ function selectedRoles(p) {
   return (p.preferences?.roles || []).map(r => String(r).trim()).filter(Boolean);
 }
 
-/** Queries for one profile. An empty role list returns nothing — no default persona. */
+// Treat any country-name scope (e.g. 'pakistan') as country-scope — mirrors worker.js
+// isCountryScoped, inlined here to avoid importing the worker into query generation.
+function isCountryScope(p) {
+  const scope = String(p.preferences?.locationScope || '').toLowerCase().trim();
+  const country = String(p.country || '').toLowerCase().trim();
+  if (!scope) return false;
+  if (scope === 'country') return true;
+  if (scope === country) return true;
+  return !['worldwide', 'continent', 'all'].includes(scope);
+}
+
+// Drop any query naming an excluded country (India by default), word-bounded so "in"
+// never matches inside another word. Keeps India/Bharat queries from ever being emitted.
+function excludeFilter(p) {
+  const ex = (p.preferences?.excludeCountries || ['india'])
+    .map(s => String(s).toLowerCase().trim()).filter(Boolean);
+  const res = ex.map(tok => new RegExp(`(?:^|[^a-z0-9])${tok.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?:[^a-z0-9]|$)`, 'i'));
+  return q => !res.some(re => re.test(q));
+}
+
+/** Queries for one profile. An empty role list returns nothing — no default persona.
+ *  Country-scoped profiles emit PK-city queries FIRST, then UAE/Saudi/US fallback queries. */
 export function queriesFromProfile(p, { limit = 30 } = {}) {
   const roles = selectedRoles(p);
   if (!roles.length) return [];
   const remote = p.preferences?.remoteOnly ? ' remote' : '';
   const country = String(p.country || '').trim();
-  const isCountryScope = p.preferences?.locationScope === 'country' && country;
-  const locationVariants = isCountryScope ? [` ${country}`, ''] : [''];
-  const prefLocs = (p.preferences?.locations || []).map(s => String(s).trim()).filter(Boolean).slice(0, 8);
-  const wantsRelo = p.workAuth?.willingToRelocate === true && prefLocs.length > 0;
+  const countryScoped = isCountryScope(p);
+  // PK cities to target first (strip the generic "Remote" entry — it is not a city query).
+  const prefLocs = (p.preferences?.locations || []).map(s => String(s).trim())
+    .filter(s => s && !/^remote$/i.test(s)).slice(0, 8);
+  // Fallback regions (UAE/Saudi first, then US) in their stored order.
+  const fallback = (p.preferences?.fallbackRegions || []).map(s => String(s).trim()).filter(Boolean);
 
   const out = new Set();
+  // 1) PK-city queries FIRST so they occupy the front of the limit slice.
+  if (countryScoped && prefLocs.length) {
+    for (const role of roles) {
+      for (const city of prefLocs) {
+        out.add(`hiring ${role} ${city}`);
+        out.add(`we are hiring ${role} ${city}`);
+      }
+    }
+  }
+  // 2) Generic role phrasings (with the country term when country-scoped).
+  const locationVariants = countryScoped && country ? [` ${country}`, ''] : [''];
   for (const role of roles) {
     for (const loc of locationVariants) {
       out.add(`hiring ${role}${loc}${remote}`);
       out.add(`we are hiring ${role}${loc}${remote}`);
     }
     out.add(`looking for ${role}${remote} email your cv`);
-    if (wantsRelo) {
-      for (const loc of prefLocs) {
-        out.add(`hiring ${role} ${loc}`);
-        out.add(`${role} ${loc} visa sponsorship`);
-      }
+  }
+  // 3) Fallback-region remote queries — UAE/Saudi ahead of US (stored order).
+  for (const role of roles) {
+    for (const region of fallback) {
+      out.add(`${role} ${region} remote`);
+      out.add(`hiring ${role} ${region}`);
     }
   }
-  return [...out].slice(0, limit);
+  return [...out].filter(excludeFilter(p)).slice(0, limit);
 }
 
 export function buildQueries({ limit = 30 } = {}) {
@@ -53,14 +88,17 @@ export function listingQueriesFromProfile(p, { limit = 18 } = {}) {
   const roles = selectedRoles(p);
   if (!roles.length) return [];
   const remote = p.preferences?.remoteOnly ? ' remote' : '';
-  const prefLocs = (p.preferences?.locations || []).map(s => String(s).trim()).filter(Boolean).slice(0, 6);
-  const wantsRelo = p.workAuth?.willingToRelocate === true && prefLocs.length > 0;
+  const countryScoped = isCountryScope(p);
+  const prefLocs = (p.preferences?.locations || []).map(s => String(s).trim())
+    .filter(s => s && !/^remote$/i.test(s)).slice(0, 6);
+  const fallback = (p.preferences?.fallbackRegions || []).map(s => String(s).trim()).filter(Boolean);
   const out = new Set();
-  for (const r of roles) {
-    out.add(`${r}${remote}`);
-    if (wantsRelo) { for (const loc of prefLocs) out.add(`${r} ${loc}`); out.add(`${r} visa sponsorship`); }
-  }
-  return [...out].slice(0, limit);
+  // PK-city listings first when country-scoped.
+  if (countryScoped && prefLocs.length) for (const r of roles) for (const loc of prefLocs) out.add(`${r} ${loc}`);
+  for (const r of roles) out.add(`${r}${remote}`);
+  // Fallback regions (UAE/Saudi then US) after local.
+  for (const r of roles) for (const region of fallback) out.add(`${r} ${region} remote`);
+  return [...out].filter(excludeFilter(p)).slice(0, limit);
 }
 
 export function buildListingQueries({ limit = 18 } = {}) {
