@@ -108,18 +108,31 @@ export function salaryFor(q, p, numeric = false) {
   if (!s) return numeric ? null : 'Negotiable';
 
   const baseCur = s.currency;                 // currency the stored figure is in
-  const cur = requestedCurrency(q, 'pkr');     // currency the QUESTION wants (PKR default)
+  const cur = requestedCurrency(q, baseCur);   // currency the QUESTION wants (stored currency default)
   const period = requestedPeriod(q, s.period || 'month');
   const basePeriod = s.period || 'month';
   const toMonthly = v => basePeriod === 'year' ? v / 12 : basePeriod === 'hour' ? v * 160 : v;
   const fromMonthly = v => period === 'year' ? v * 12 : period === 'hour' ? v / 160 : v;
-  // Convert from the stored currency to the requested currency via the USD table.
-  const convert = v => formatSalaryValue(fromMonthly(toMonthly(v) / (FX[baseCur] || 1) * (FX[cur] || 1)), cur, period);
+  // Convert from the stored currency to the requested currency via the USD table. When the
+  // question does not name a different currency, baseCur === cur and the factor is exactly 1 —
+  // so a PKR-stored / PKR-asked figure is NEVER multiplied (that FX hop produced the 56,000,000
+  // garbage: 200000 / FX.usd * FX.pkr). Real cross-currency questions keep the same ratio.
+  const fxFactor = baseCur === cur ? 1 : (FX[cur] || 1) / (FX[baseCur] || 1);
+  const convert = v => formatSalaryValue(fromMonthly(toMonthly(v) * fxFactor), cur, period);
+
+  // Guardrail: a salary answer can never exceed ~50× the stored monthly-equivalent expectation
+  // (converted to the same currency/period). If a stray FX hop ever yields an implausible
+  // magnitude, fall back to the direct no-FX figure instead of emitting an 8-digit number.
+  const expected = s.value || s.min || s.max || 0;
+  const sane = v => {
+    const band = formatSalaryValue(fromMonthly(toMonthly(expected)) * fxFactor, cur, period);
+    return band > 0 && v > band * 50 ? band : v;
+  };
 
   // Current-pay questions → single current figure. Expected → min (numeric) or min-max range.
-  if (s.isCurrent) return String(convert(s.value || s.min || 0));
-  const min = convert(s.min || s.value || 0);
-  const max = convert(s.max || s.min || 0);
+  if (s.isCurrent) return String(sane(convert(s.value || s.min || 0)));
+  const min = sane(convert(s.min || s.value || 0));
+  const max = sane(convert(s.max || s.min || 0));
   return numeric ? String(min) : (min === max ? String(min) : `${min}-${max}`);
 }
 
@@ -283,6 +296,98 @@ export function textAnswer(question, { numeric = false } = {}) {
   return null;
 }
 
+// Country tokens the work-auth / sponsorship / residence logic recognizes in a question. A
+// question that names one of these is "about" that country; if it is NOT in the user's
+// authorizedIn list the truthful answer to "are you authorized to work there" is No (and the
+// truthful answer to "do you require sponsorship" is Yes).
+const COUNTRY_TOKENS = [
+  'united states', 'u.s.', 'us', 'usa', 'america',
+  'united kingdom', 'u.k.', 'uk', 'britain', 'england',
+  'canada', 'australia', 'new zealand', 'ireland', 'singapore',
+  'united arab emirates', 'uae', 'dubai', 'abu dhabi',
+  'saudi arabia', 'ksa', 'qatar', 'kuwait', 'bahrain', 'oman',
+  'germany', 'netherlands', 'france', 'spain', 'ireland', 'eu', 'europe', 'european union',
+  'pakistan', 'india',
+];
+
+/**
+ * Resolve a Yes/No application question truthfully from the user's work-authorization and
+ * country. Pure (no profile I/O), so it is both used in production (choiceAnswer) and unit-tested.
+ *
+ * @param {string} question
+ * @param {object} ctx
+ * @param {string} ctx.yesLabel  the actual "Yes"-style option label present in the form
+ * @param {string} ctx.noLabel   the actual "No"-style option label present in the form
+ * @param {object} [ctx.workAuth] { authorizedIn:[], needsSponsorship, willingToRelocate }
+ * @param {string} [ctx.country]  the user's country (e.g. "Pakistan")
+ * @returns {string|null} yesLabel, noLabel, or null if genuinely ambiguous
+ */
+export function resolveYesNo(question, { yesLabel, noLabel, workAuth = {}, country = '' } = {}) {
+  const q = String(question || '').toLowerCase();
+  if (!yesLabel && !noLabel) return null;
+  const wa = workAuth || {};
+  const authIn = (Array.isArray(wa.authorizedIn) && wa.authorizedIn.length
+    ? wa.authorizedIn
+    : (country ? [country] : []))
+    .map(s => String(s || '').toLowerCase()).filter(Boolean);
+  const userCountry = String(country || '').toLowerCase();
+
+  // Which country (if any) does the question name, and is the user authorized there?
+  const namedCountry = COUNTRY_TOKENS.find(tok => new RegExp(`\\b${escapeRegExp(tok)}\\b`).test(q));
+  const authorizedInNamed = namedCountry
+    ? authIn.some(c => namedCountry.includes(c) || c.includes(namedCountry))
+    : authIn.some(c => q.includes(c));
+
+  // Sponsorship / visa: truthful answer is Yes when the role names a country the user is NOT
+  // authorized in (a Pakistan user abroad needs sponsorship). Only No when explicitly not needed
+  // or the named country is one they are authorized in.
+  if (/sponsor|visa/.test(q)) {
+    if (wa.needsSponsorship === false) return noLabel;
+    if (wa.needsSponsorship === true) return yesLabel;
+    if (namedCountry) return authorizedInNamed ? noLabel : yesLabel;
+    return authIn.length ? noLabel : yesLabel;
+  }
+
+  if (/relocat/.test(q)) {
+    if (wa.willingToRelocate === false) return noLabel;
+    return wa.willingToRelocate ? yesLabel : noLabel;
+  }
+
+  // Authorized / right-to-work / work permit: Yes only when authorized in the named country (or
+  // the question is clearly about remote-anywhere with no restricting country). Otherwise No.
+  if (/legally|authori[sz]ed|right to work|eligible to work|work permit|permit to work/.test(q)) {
+    if (namedCountry) return authorizedInNamed ? yesLabel : noLabel;
+    if (/remote|anywhere/.test(q)) return yesLabel;
+    return authIn.some(c => q.includes(c)) ? yesLabel : noLabel;
+  }
+
+  // Legal-screening negatives: convicted/criminal/non-compete/related/currently-employed → No.
+  if (/convicted|criminal|felony|non-?compete|related to anyone|previously (worked|employed)|currently employed by|been employed by/.test(q)) {
+    return noLabel;
+  }
+
+  // Residence / citizenship / located-in: truthful from the user's country. A question naming a
+  // country that is NOT the user's → No (a Pakistan user does not reside in California / is not a
+  // U.S. citizen / federal-contractor citizenship). Naming the user's own country → Yes.
+  if (/reside in|resident of|residing in|\bcitizen\b|citizenship|located in|based in|do you live in|federal contractor/.test(q)) {
+    if (namedCountry) {
+      const matchesUser = userCountry && (namedCountry.includes(userCountry) || userCountry.includes(namedCountry));
+      return matchesUser ? yesLabel : noLabel;
+    }
+    // "Do you reside in California?" etc. — a US sub-region the Pakistan user is not in → No.
+    if (/california|texas|new york|\bu\.?s\.?\b|united states|\buk\b|canada/.test(q) && userCountry && !/united states|\buk\b|canada/.test(userCountry)) {
+      return noLabel;
+    }
+  }
+
+  // Consent / agreement / capability: standard Yes.
+  if (/background check|drug test|agree|consent|acknowledge|comfortable|willing|able to|can you|do you have|have you|did you|are you|familiar|experience|worked (with|on|in)|built|shipped|proficient|startup|fast.?paced|agile|environment/.test(q)) {
+    return yesLabel;
+  }
+
+  return null;
+}
+
 /**
  * Choose among options (radio/select). Returns the option text to pick, or null if unknown.
  * @param {string} question
@@ -313,19 +418,13 @@ export function choiceAnswer(question, options) {
   let basis = '';
 
   if (yes && no) {
-    if (/sponsor|visa/.test(q)) {
-      derived = wa.needsSponsorship ? yes : no; basis = 'workAuth.needsSponsorship from profile';
-    } else if (/relocat/.test(q)) {
-      derived = wa.willingToRelocate ? yes : no; basis = 'workAuth.willingToRelocate from profile';
-    } else if (/legally|authori[sz]ed|right to work|eligible to work|work permit/.test(q)) {
-      derived = (authIn.some(c => q.includes(c)) || /remote|anywhere/.test(q) && !/(us|united states|uk|eu|canada)\b/.test(q))
-        ? yes : no;
-      basis = 'workAuth.authorizedIn from profile';
-    } else if (/convicted|criminal|felony|non-?compete|related to anyone|previously (worked|employed)|currently employed by|been employed by/.test(q)) {
-      derived = no; basis = 'standard no for legal screening questions';
-    } else if (/background check|drug test|agree|consent|acknowledge|comfortable|willing|able to|can you|do you have|have you|did you|are you|familiar|experience|worked (with|on|in)|built|shipped|proficient|startup|fast.?paced|agile|environment/.test(q)) {
-      derived = yes; basis = 'standard yes for consent/agreement questions';
-    }
+    // Delegate the yes/no decision (work-auth, sponsorship, residence, consent, legal screening)
+    // to the pure, unit-tested resolveYesNo() so production and tests share one source of truth.
+    derived = resolveYesNo(question, {
+      yesLabel: yes, noLabel: no,
+      workAuth: wa, country: p.country || (p.location || '').split(',').pop().trim(),
+    });
+    basis = 'yes/no resolved from workAuth + country (resolveYesNo)';
   } else if (/years/.test(q)) {
     const y = parseFloat(textAnswer('years of experience') || '0');
     derived = opts.find(o => { const m = o.match(/(\d+)\s*[-–to]+\s*(\d+)/); return m && y >= +m[1] && y <= +m[2]; })

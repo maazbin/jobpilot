@@ -398,11 +398,21 @@ export async function connect({ profileUrl, posterName, role, company, withNote 
     if (withNote) {
       const addNote = page.getByRole('button', { name: /add a note/i }).first();
       if (await addNote.isVisible().catch(() => false)) {
-        await addNote.click(); await SLEEP(1000);
+        // Guarded click: isVisible() can pass while the button is still covered by a
+        // transient overlay (e.g. the 2026 search-typeahead popover captured in encounter
+        // #25) or detached by a re-render. An UNGUARDED addNote.click() then blocks for the
+        // full 12 s default timeout and throws "locator.click: Timeout 12000ms exceeded",
+        // which was the exact cause of encounter #25. Try normal → force → JS click, each
+        // with a short timeout, and fall through to the note-less/dialog-detection path
+        // rather than throwing when the note editor can't be opened.
+        let addNoteClicked = await addNote.click({ timeout: 4000 }).then(() => true).catch(() => false);
+        if (!addNoteClicked) addNoteClicked = await addNote.click({ force: true, timeout: 3000 }).then(() => true).catch(() => false);
+        if (!addNoteClicked) addNoteClicked = await addNote.evaluate(el => { el.click(); return true; }).catch(() => false);
+        await SLEEP(1000);
         const ta = page.locator('textarea').first();
         await ta.waitFor({ state: 'visible', timeout: 5000 }).catch(() => {});
-        if (await ta.isVisible().catch(() => false)) { await ta.fill(note); await SLEEP(400); usedNote = true; }
-        else if (process.env.DEBUG_CONN) console.log('textarea not visible after addNote');
+        if (await ta.isVisible().catch(() => false)) { await ta.fill(note).catch(() => {}); await SLEEP(400); usedNote = true; }
+        else if (process.env.DEBUG_CONN) console.log('textarea not visible after addNote (clicked=' + addNoteClicked + ')');
 
         // Free custom-note quota exhausted → LinkedIn shows the Premium upsell instead of the
         // note editor. Dismiss it and continue with a note-less invitation.
