@@ -32,6 +32,47 @@ function placeHit(text, place) {
   return new RegExp(`(?:^|[^a-z0-9])${escaped}(?:[^a-z0-9]|$)`, 'i').test(text);
 }
 
+// Indian cities — a hard-block signal regardless of the keepRemoteOrVisa switch.
+const INDIA_CITIES = /\b(?:bengaluru|bangalore|mumbai|delhi|new delhi|hyderabad|pune|chennai|noida|gurgaon|gurugram|kolkata|ahmedabad|jaipur)\b/i;
+
+// A 2-letter token (e.g. "in") is treated as a country CODE: matched uppercase + word-bounded
+// + case-sensitive so it blocks ", IN" / "- IN" / "IN only" but never the prose preposition
+// "in" or the substring in "infrastructure" / "india" / "linkedin".
+function excludeTokenHit(text, token) {
+  const tok = String(token || '').trim();
+  if (!tok) return false;
+  if (tok.length === 2) {
+    const esc = tok.toUpperCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp(`(?:^|[^A-Za-z0-9])${esc}(?:[^A-Za-z0-9]|$)`).test(String(text));
+  }
+  return placeHit(text, tok);
+}
+
+// Hard-exclude leads from countries this profile never wants (default: India). Fires regardless
+// of keepRemoteOrVisa. India cities + "India only" are caught in addition to excludeCountries.
+export function indiaBlocked(text = '', profile = {}) {
+  const t = String(text || '');
+  const ex = (profile?.preferences?.excludeCountries || ['india'])
+    .map(s => String(s).toLowerCase().trim()).filter(Boolean);
+  if (INDIA_CITIES.test(t)) return true;
+  if (/\bindia only\b/i.test(t)) return true;
+  return ex.some(tok => excludeTokenHit(t, tok));
+}
+
+// Small additive geo-priority so PK locations rank first, then UAE/Saudi, then US. Ordering only —
+// it never flips keep/skip.
+function geoPriority(text = '', profile = {}) {
+  const t = String(text || '');
+  const locs = (profile?.preferences?.locations || []).map(s => String(s).trim()).filter(s => s.length >= 2);
+  if (locs.some(loc => placeHit(t, loc))) return 0.15;
+  const fallbacks = (profile?.preferences?.fallbackRegions || []).map(s => String(s).trim()).filter(Boolean);
+  const UAE_SAUDI = /\b(?:uae|united arab emirates|dubai|abu dhabi|saudi|ksa|riyadh|jeddah)\b/i;
+  const US = /\b(?:united states|usa|us)\b/i;
+  if (fallbacks.length && UAE_SAUDI.test(t)) return 0.10;
+  if (fallbacks.length && US.test(t)) return 0.05;
+  return 0;
+}
+
 function listedOffer(text, profile) {
   if (!OFFER.test(text) || REFUSAL.test(text)) return false;
   const places = (profile?.preferences?.locations || []).map(s => String(s).trim()).filter(s => s.length >= 2);
@@ -56,13 +97,34 @@ export function countryLocked(text = '') {
   return false;
 }
 
+// A role that REQUIRES US citizenship / clearance / US work authorization — expressed as prose,
+// not a "US-only" location tag — must be skipped when the profile has no matching work auth.
+// This is separate from countryLocked() (a geographic allow-list) so the two concerns stay
+// readable. It never fires on timezone-overlap wording, so worldwide-remote roles are safe.
+const CITIZENSHIP_REQ = /\b(?:u\.?s\.?|united states)\s+citizens?(?:hip)?\s+(?:required|only|is required|a requirement)\b|\ball employees?\s+(?:are|must be)\s+u\.?s\.?\s+citizens?\b|\b(?:must be|be)\s+a\s+u\.?s\.?\s+citizen\b|\bcitizenship\s+(?:is\s+)?required\b|\bfederal contractor\b|\bsecurity clearance\b|\bmust (?:be )?(?:able to )?(?:legally )?(?:work|authorized to work) (?:in|within) (?:the )?(?:us|u\.s\.|usa|united states)\b|\bmust have work authorization\b|\brequires? (?:us|u\.s\.|united states) work authorization\b/i;
+
+/** True when the text requires citizenship/work-authorization the profile does not hold. */
+export function authLocked(text = '', profile = {}) {
+  if (!CITIZENSHIP_REQ.test(String(text))) return false;
+  const authIn = (profile?.workAuth?.authorizedIn || []).map(s => String(s).toLowerCase());
+  // The detector is US-focused; keep the lead only if the profile is US-authorized.
+  return !authIn.some(c => /\b(?:us|u\.s\.|usa|united states)\b/.test(c));
+}
+
 /** @returns {{ keep: boolean, why: string }} */
 export function leadKeep(text = '', profile = {}) {
+  // India is a hard-block — before the keepRemoteOrVisa shortcut, so it fires regardless.
+  if (indiaBlocked(String(text || ''), profile)) return { keep: false, why: 'excluded: India' };
   if (!keepRemoteOrVisaEnabled(profile)) return { keep: true, why: '' };
   const slice = String(text || '').slice(0, 2500);
   const remote = REMOTE.test(slice);
   const locked = countryLocked(slice);
   const offer = listedOffer(slice, profile);
+  const authReq = authLocked(slice, profile);
+  // A citizenship / work-authorization requirement the profile cannot meet is a hard skip,
+  // even when the post says "remote" — unless a genuine visa/relocation OFFER in a listed place
+  // overrides it. Checked before the remote shortcut so "Remote. US citizens only." is rejected.
+  if (authReq && !offer) return { keep: false, why: 'requires citizenship/work authorization the profile does not have' };
   if (remote && !locked) return { keep: true, why: '' };
   if (offer) return { keep: true, why: '' };
   if (locked) return { keep: false, why: 'remote is limited to a country list' };
@@ -109,6 +171,8 @@ const OFF_STACK = /\b(java(?!script)|\.net|c#|ruby|rails|rust|golang|ios|android
 const GEO_LOCK = /\b(us|u\.s\.|usa|united states|uk|eu|europe|canada|india|brazil|br|latam|germany|australia)[- ]?(only|based only|residents? only|citizens? only)\b|\bmust (be|reside|live) (located |based )?in (the )?(us|usa|united states|uk|eu|canada|india)\b|\b(remote|hybrid)\s*\([^)]*\b(tx|md|in|ca|ny|wa|ma|va|fl|nj|il|ga|co|az|or|ut|dc)\b[^)]*\)|\b(remote|hybrid)\s*\(?(?:u\.?s\.?|usa|united states)\)?|\b100%\s+remote\s*\(?(?:u\.?s\.?|usa|united states)\)?|\b(onsite|on-site|work from office|wfo|hybrid)\b(?![^.]{0,40}remote)|\bus citizen|security clearance|\bh1b\b|\bvisa sponsorship\b|\bsponsorship required\b|\bmust have work authorization\b|(?:us|u\.s\.|united states)\s+(?:citizens?|nationals?|permanent residents?|green card holders?|ead holders?)|\bgreen card holders?\b|\bead holders?\b|\b(?:unable|cannot|can\'t) sponsor\b|\bno sponsorship\b|\bsponsorship (?:is )?(?:not|isn\'t) (?:available|provided|offered)\b|\bw-?2\b/i;
 export function score(text = '', title = '', profile) {
   const p = profile || getProfile();
+  // India is a hard-reject regardless of keepRemoteOrVisa, before any relevance logic.
+  if (indiaBlocked(`${title || ''}\n${text || ''}`, p)) return { rel: 0, skip: true, why: 'excluded: India' };
   const t = text.toLowerCase();
   const excluded = excludedCompanyMatch(text, p);
   // CRITICAL: skip-term and off-stack checks must ONLY fire on the job TITLE, never the
@@ -133,7 +197,8 @@ export function score(text = '', title = '', profile) {
   const core = roleHit || (CV_TITLE.test(head) && !NON_CV_TITLE.test(head));
   const offStack = OFF_STACK.test(head) && !/\b(python|ai|ml|llm|fastapi|django)\b/.test(head);
   let hit = 0; for (const s of terms) if (t.includes(s)) hit++;
-  const rel = Math.min(1, (core ? 0.45 : 0) + 0.55 * Math.min(1, hit / 6));
+  // Geo-priority boost (PK > UAE/Saudi > US) only reorders; the Math.min clamp keeps rel ≤ 1.
+  const rel = Math.min(1, (core ? 0.45 : 0) + 0.55 * Math.min(1, hit / 6) + geoPriority(`${title || ''}\n${text || ''}`, p));
   // Junior check: title + first 120 chars of body only — not the full description.
   const tooJunior = /\b(freshers?|0\s*[-–]\s*[12]\s*(years|yrs)|entry[- ]level|internship|interns?\b|trainee|graduate program)\b/.test(titleOnly + ' ' + t.slice(0, 120));
   const equityOnly = /\b(co-?founder|cofondat|equity[- ]only|unpaid|sweat equity|no salary)\b/.test(t.slice(0, 700));

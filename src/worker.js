@@ -13,7 +13,7 @@ import { launchChrome } from './mcp/chrome.js';
 import { verifyLogins } from './agent/browser.js';
 import { initDB, upsertJobs, setStatus, setFields, bumpAttempt, logEmail, log, getJob,
   alreadyEmailed, alreadyApplied, alreadyConnected, logConnect, rows, doneToday, isFakeEmail } from './tracker.js';
-import { liPosts, liJobs, hnHiring, publicBoards, relToIso } from './mcp/sources.js';
+import { liPosts, liJobs, hnHiring, publicBoards, relToIso, indiaBlocked } from './mcp/sources.js';
 import { easyApply } from './mcp/easyapply.js';
 import { applyForm } from './mcp/forms.js';
 import { connect } from './mcp/connect.js';
@@ -228,11 +228,23 @@ function jobCvAttachment(j, p) {
 const PK_CITIES = /\b(karachi|lahore|islamabad|rawalpindi|faisalabad|multan|peshawar|quetta|sialkot|hyderabad)\b/i;
 const GEO_LOCK_ACTION = /\b(us|u\.s\.|usa|united states|uk|u\.k\.|united kingdom|eu|europe|european union|canada|india|brazil|latam|germany|australia|singapore|hong kong)[- ]?(only|based only|residents? only|citizens? only|timezone|tz)\b|\bmust (be|reside|live|work) (located |based )?in (the )?(us|usa|uk|eu|canada|india|europe)\b|\bus citizen|security clearance|\bh1b\b|\bno[- ]?sponsorship\b/i;
 
+// Treat a country-name scope (e.g. 'pakistan') the same as the literal 'country' scope. Only the
+// explicit worldwide-ish values (and an empty scope) mean "search everywhere".
+export function isCountryScoped(scope, country) {
+  const s = String(scope || '').toLowerCase().trim();
+  if (!s) return false;
+  if (s === 'country') return true;
+  if (country && s === String(country).toLowerCase().trim()) return true;
+  return !['worldwide', 'continent', 'all'].includes(s);
+}
+
 function locationAllowed(job) {
   if (!isOnboarded()) return false;
   const profile = getProfile();
-  if (profile.preferences?.locationScope !== 'country') return true;
+  // India is never allowed, regardless of scope.
+  if (indiaBlocked(`${job.location || ''} ${job.description || ''}`, profile)) return false;
   const country = String(profile.country || '').trim().toLowerCase();
+  if (!isCountryScoped(profile.preferences?.locationScope, country)) return true;
   if (!country) return false;
 
   const location = String(job.location || '').toLowerCase();
@@ -308,7 +320,8 @@ async function scout() {
         beat('scout', `LI jobs: ${jq}`);
         const profile = getProfile();
         const country = String(profile.country || '').toLowerCase();
-        const geoIds = profile.preferences?.locationScope === 'country'
+        // Country-scoped (incl. 'pakistan') → Pakistan geoId only; India is never searched.
+        const geoIds = isCountryScoped(profile.preferences?.locationScope, country)
           ? (country === 'pakistan' ? ['101022442'] : [])
           : ['92000000'];
         for (const geoId of geoIds) {
@@ -645,8 +658,12 @@ try {
   if (n) say('main', `revived ${n} email lead(s) stuck at the attempt cap (transient-fail self-heal)`);
 } catch {}
 // Keep the repo branch in sync with the main repo on startup (fork → rebase on upstream).
-if (!DRY && getProfile().consent?.autoContribute !== false) {
+// SKIPPED when NO_EVOLVE is set (data-only mode): the startup rebase/reset would otherwise wipe
+// local uncommitted/untracked changes — including the data-only + hook scripts — on every boot.
+if (!DRY && !NO_EVOLVE && getProfile().consent?.autoContribute !== false) {
   try { const { syncBranch } = await import('./contribute.js'); const s = await syncBranch(); say('main', `branch sync: ${s.synced ? 'in sync with ' + (s.upstream || 'origin') : 'skipped (' + (s.reason || '') + ')'}`); } catch {}
+} else if (NO_EVOLVE) {
+  say('main', 'data-only mode — skipping startup branch sync (local changes preserved)');
 }
 let uiPort = 7788;
 try { uiPort = await startServer() || 7788; } catch (e) { say('main', 'dashboard server issue (continuing): ' + (e.message || '').slice(0, 80)); }

@@ -1,4 +1,4 @@
-import { countryLocked, keepRemoteOrVisaEnabled, leadKeep, score } from '../src/mcp/sources.js';
+import { countryLocked, keepRemoteOrVisaEnabled, leadKeep, score, indiaBlocked } from '../src/mcp/sources.js';
 
 const places = ['Netherlands', 'Germany', 'Luxembourg', 'Europe', 'EU'];
 const profile = {
@@ -39,6 +39,35 @@ check('score skips onsite without an offer', scored('Onsite in Amsterdam, Nether
 check('score keeps onsite when visa names a listed place', scored('Onsite Amsterdam. Visa sponsorship. Netherlands. Python.').skip === false);
 check('switch off restores the old geo reason', scored('US only remote. Python.', off).why === 'location-restricted / authorization');
 check('switch off still keeps a listed place with no offer', scored('Onsite in Amsterdam, Netherlands. Python.', off).skip === false);
+
+// ── Geo: India hard-block + PK/UAE/US keep + scoring priority ──────────────────
+const pk = {
+  skills: ['react'],
+  preferences: {
+    roles: ['Frontend developer'], skip: [], keywords: ['react'],
+    locations: ['Pakistan', 'Islamabad', 'Karachi', 'Lahore', 'Remote'], locationScope: 'pakistan',
+    excludeCountries: ['india', 'in', 'bharat'],
+    fallbackRegions: ['UAE', 'Dubai', 'Saudi Arabia', 'Riyadh', 'United States', 'USA', 'US'],
+  },
+};
+const pkOff = { ...pk, preferences: { ...pk.preferences, keepRemoteOrVisa: false } };
+
+check('india city blocked', leadKeep('Frontend developer, Bengaluru, India.', pk).why === 'excluded: India');
+check('india only blocked', leadKeep('Remote React role (India only).', pk).keep === false);
+check('india blocked even with switch off', leadKeep('Mumbai, India.', pkOff).keep === false);
+check('PK remote keep', leadKeep('Frontend developer, Remote, Pakistan', pk).keep);
+check('UAE remote keep', leadKeep('Next.js developer, Dubai UAE, remote', pk).keep);
+check('US timezone keep', leadKeep('React developer, remote US timezone overlap', pk).keep);
+check('infrastructure not a false positive', leadKeep('Remote React role. We run Infrastructure as code in Islamabad.', pk).keep);
+check('prose "in" not blocked', leadKeep('Frontend developer, remote role in Islamabad Pakistan', pk).keep);
+check('IN country code blocked', indiaBlocked('Frontend developer, Noida, IN only', pk) === true);
+check('score skips india', score('Frontend developer in Mumbai, India', 'Frontend developer', pk).skip === true);
+
+const relPK = score('Frontend developer, Karachi, Pakistan. React.', 'Frontend developer', pk).rel;
+const relUAE = score('Frontend developer, Dubai, UAE. React.', 'Frontend developer', pk).rel;
+const relUS = score('Frontend developer, Austin, USA. React.', 'Frontend developer', pk).rel;
+check('priority PK > UAE', relPK > relUAE);
+check('priority UAE > US', relUAE > relUS);
 
 console.log(fail === 0 ? '\nALL PASS' : `\n${fail} FAILED`);
 process.exit(fail === 0 ? 0 : 1);
