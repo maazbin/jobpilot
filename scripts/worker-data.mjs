@@ -19,7 +19,20 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const DATA = path.join(ROOT, 'data');
 const STATE = path.join(DATA, 'worker-state.json');
 const STOPFILE = path.join(DATA, '.stop');
+const NO_AUTOSTART_FILE = path.join(DATA, '.no-autostart');
 const log = (...a) => process.stderr.write('[worker-data] ' + a.join(' ') + '\n');
+
+// Kill-switch: when data/.no-autostart exists or JOBPILOT_NO_AUTOWORKER=1 is set, the worker must
+// NOT start — not even via this launcher — unless the user EXPLICITLY forces it (so an automated
+// hook or stray boot can never spawn it behind the user's back). The user forces a real start with
+// `--force` / `JOBPILOT_FORCE_WORKER=1` (that is what `npm run worker:data -- --force` sends).
+const FORCED = process.argv.includes('--force') || process.env.JOBPILOT_FORCE_WORKER === '1';
+const killSwitch = process.env.JOBPILOT_NO_AUTOWORKER === '1' || fs.existsSync(NO_AUTOSTART_FILE);
+if (killSwitch && !FORCED) {
+  log('🔒 worker auto-start is DISABLED (data/.no-autostart or JOBPILOT_NO_AUTOWORKER=1). Not starting.');
+  log('   The user must explicitly ask. To start on purpose: `npm run worker:data -- --force`.');
+  process.exit(0);
+}
 
 // Already running? (heartbeat < 2 min old) → don't start a second one.
 function workerIsLive() {

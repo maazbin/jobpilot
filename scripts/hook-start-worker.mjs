@@ -37,6 +37,15 @@ if (STOP.test(text)) {
 }
 
 if (START.test(text)) {
+  // Honor the kill-switch: if the user turned auto-start OFF (data/.no-autostart or
+  // JOBPILOT_NO_AUTOWORKER=1), this hook must NOT start the worker — the user has to force it
+  // deliberately. This prevents a casual "start ..." in a prompt from spawning the worker.
+  const killSwitch = process.env.JOBPILOT_NO_AUTOWORKER === '1'
+    || fs.existsSync(path.join(ROOT, 'data', '.no-autostart'));
+  if (killSwitch) {
+    process.stdout.write('🔒 A "start" signal was seen, but worker auto-start is DISABLED (data/.no-autostart). Not starting the worker. To start on purpose, run: npm run worker:data -- --force\n');
+    process.exit(0);
+  }
   // Fire-and-forget: worker-data.mjs itself spawns the worker detached and returns immediately.
   spawnSync('node', [path.join(ROOT, 'scripts', 'worker-data.mjs')], { cwd: ROOT, stdio: 'inherit' });
   // stdout is forwarded into the agent context for UserPromptSubmit — tell the agent what happened.

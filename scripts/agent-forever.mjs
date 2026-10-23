@@ -17,7 +17,18 @@ import { fileURLToPath } from 'url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const STOPFILE = path.join(ROOT, 'data', '.stop');
+const NO_AUTOSTART_FILE = path.join(ROOT, 'data', '.no-autostart');
 const log = (...a) => process.stderr.write('[agent-forever] ' + a.join(' ') + '\n');
+
+// Kill-switch: refuse to run the supervisor at all when auto-start is disabled, unless the user
+// explicitly forces it (`--force` / JOBPILOT_FORCE_WORKER=1). Prevents an unattended `npm run agent`
+// from reviving the worker when the user has turned auto-start off.
+const FORCED = process.argv.includes('--force') || process.env.JOBPILOT_FORCE_WORKER === '1';
+if ((process.env.JOBPILOT_NO_AUTOWORKER === '1' || fs.existsSync(NO_AUTOSTART_FILE)) && !FORCED) {
+  log('🔒 auto-start is DISABLED (data/.no-autostart or JOBPILOT_NO_AUTOWORKER=1). Supervisor not starting.');
+  log('   To run on purpose: `npm run agent -- --force`.');
+  process.exit(0);
+}
 
 try { fs.rmSync(STOPFILE, { force: true }); } catch {}   // clear a stale stop flag so we start
 const stopped = () => fs.existsSync(STOPFILE);

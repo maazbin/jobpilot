@@ -56,6 +56,20 @@ export function countryLocked(text = '') {
   return false;
 }
 
+// A role that REQUIRES US citizenship / clearance / US work authorization — expressed as prose,
+// not a "US-only" location tag — must be skipped when the profile has no matching work auth.
+// This is separate from countryLocked() (a geographic allow-list) so the two concerns stay
+// readable. It never fires on timezone-overlap wording, so worldwide-remote roles are safe.
+const CITIZENSHIP_REQ = /\b(?:u\.?s\.?|united states)\s+citizens?(?:hip)?\s+(?:required|only|is required|a requirement)\b|\ball employees?\s+(?:are|must be)\s+u\.?s\.?\s+citizens?\b|\b(?:must be|be)\s+a\s+u\.?s\.?\s+citizen\b|\bcitizenship\s+(?:is\s+)?required\b|\bfederal contractor\b|\bsecurity clearance\b|\bmust (?:be )?(?:able to )?(?:legally )?(?:work|authorized to work) (?:in|within) (?:the )?(?:us|u\.s\.|usa|united states)\b|\bmust have work authorization\b|\brequires? (?:us|u\.s\.|united states) work authorization\b/i;
+
+/** True when the text requires citizenship/work-authorization the profile does not hold. */
+export function authLocked(text = '', profile = {}) {
+  if (!CITIZENSHIP_REQ.test(String(text))) return false;
+  const authIn = (profile?.workAuth?.authorizedIn || []).map(s => String(s).toLowerCase());
+  // The detector is US-focused; keep the lead only if the profile is US-authorized.
+  return !authIn.some(c => /\b(?:us|u\.s\.|usa|united states)\b/.test(c));
+}
+
 /** @returns {{ keep: boolean, why: string }} */
 export function leadKeep(text = '', profile = {}) {
   if (!keepRemoteOrVisaEnabled(profile)) return { keep: true, why: '' };
@@ -63,6 +77,11 @@ export function leadKeep(text = '', profile = {}) {
   const remote = REMOTE.test(slice);
   const locked = countryLocked(slice);
   const offer = listedOffer(slice, profile);
+  const authReq = authLocked(slice, profile);
+  // A citizenship / work-authorization requirement the profile cannot meet is a hard skip,
+  // even when the post says "remote" — unless a genuine visa/relocation OFFER in a listed place
+  // overrides it. Checked before the remote shortcut so "Remote. US citizens only." is rejected.
+  if (authReq && !offer) return { keep: false, why: 'requires citizenship/work authorization the profile does not have' };
   if (remote && !locked) return { keep: true, why: '' };
   if (offer) return { keep: true, why: '' };
   if (locked) return { keep: false, why: 'remote is limited to a country list' };
