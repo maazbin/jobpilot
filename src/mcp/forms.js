@@ -132,16 +132,29 @@ async function resolveIndeed(page) {
   if (!found) return null;
   if (found.direct) return found.direct;
 
-  // Follow the Indeed redirect link within the authenticated session and capture where
-  // it finally lands. If it leaves indeed.com, that destination is the real ATS; hand it
-  // back to applyForm(). If it stays on indeed.com (in-site Indeed Apply), we have no
-  // external ATS to drive — signal that so the caller routes to connect/email.
+  // Follow the Indeed redirect link within the authenticated session and capture where it finally
+  // lands. If it leaves indeed.com, that destination is the real ATS; hand it back to applyForm().
+  // If it stays on indeed.com (in-site Indeed Apply), there is no external ATS to drive — return
+  // null so the caller routes to connect/email.
   if (found.redirect) {
     try {
       await page.goto(found.redirect, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
-      await SLEEP(3500);
-      const dest = page.url();
-      if (dest && !/indeed\.com/.test(dest)) return dest;
+      // /applystart does a MULTI-HOP redirect (indeed → tracker → employer ATS). Reading the URL
+      // once can catch it mid-hop (still on indeed.com) or on a brief bounce back. Poll until the
+      // URL stabilizes: accept the first off-indeed.com host that stays put for two reads, and give
+      // up if it is still on indeed.com after the window (in-platform apply, not an external ATS).
+      let dest = page.url();
+      let stableOff = '';
+      for (let i = 0; i < 8; i++) {
+        await SLEEP(1500);
+        const now = page.url();
+        if (now && !/indeed\.com/.test(now) && !/smartapply\.indeed\.com/.test(now)) {
+          if (now === dest) { stableOff = now; break; }  // settled off-indeed
+        }
+        dest = now;
+      }
+      if (stableOff) return stableOff;
+      if (dest && !/indeed\.com/.test(dest)) return dest;  // off-indeed on last read even if not 2x-stable
     } catch { /* fall through */ }
   }
   return null;
@@ -177,7 +190,7 @@ async function resolveGlassdoor(page) {
     const dest = popup.url();
     await popup.close().catch(() => {});
     if (dest && !/glassdoor\.com/.test(dest) && !/smartapply\.indeed\.com/.test(dest)) return dest;
-    if (/smartapply\.indeed\.com/.test(dest)) return null;   // Indeed Apply now — not this click
+    if (/smartapply\.indeed\.com/.test(dest)) return null;   // bounced to reCAPTCHA path
   }
 
   // Glassdoor navigates in the same tab sometimes.
