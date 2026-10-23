@@ -77,6 +77,10 @@ const DEFAULT_PROFILE = {
     // Optional local CV variants. Each entry is { id, label, path, focuses, keywords }.
     // Paths are per-user data and must never be committed or shared upstream.
     cvVariants: [],
+    // Countries to HARD-EXCLUDE from search/keep/score (word-bounded match). Default blocks India.
+    excludeCountries: ['india'],
+    // Ordered remote-fallback regions used when few/no local leads: earlier = higher priority.
+    fallbackRegions: [],
   },
 
   // Answers to common application questions (agent uses semantically)
