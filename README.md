@@ -17,9 +17,9 @@ You point a coding agent at this folder. That agent is the brain. JobPilot is th
 
 The first minutes are quiet on purpose. Dependencies install themselves. Leave that window open. The browser opens once, on first onboard, and you sign in on every platform above. After that, those sessions stay.
 
-**Stable release: [v3.4.0](https://github.com/maazbin/jobpilot/releases/tag/v3.4.0).** The setup page and the dashboard test whether X, LinkedIn, and Gmail are actually signed in.
+**Stable release: [v3.5.0](https://github.com/maazbin/jobpilot/releases/tag/v3.5.0).** Easy Apply finishes a stuck consent step, salary answers keep the stored currency, and country and phone come from the profile.
 
-[![Stable](https://img.shields.io/badge/release-v3.4.0-22c55e.svg)](https://github.com/maazbin/jobpilot/releases/tag/v3.4.0)
+[![Stable](https://img.shields.io/badge/release-v3.5.0-22c55e.svg)](https://github.com/maazbin/jobpilot/releases/tag/v3.5.0)
 [![MIT License](https://img.shields.io/badge/license-MIT-14532d.svg)](LICENSE)
 [![MCP](https://img.shields.io/badge/protocol-MCP-2563eb.svg)](https://modelcontextprotocol.io)
 [![Node](https://img.shields.io/badge/node-%E2%89%A518-166534.svg)](https://nodejs.org)
@@ -155,6 +155,16 @@ This is the line we will keep. New work happens after this tag.
 - Commits from the evolver are authored as the GitHub username, not a personal name or a personal email.
 
 ---
+
+## v3.5.0
+
+X hiring posts are scraped when the mix gives X a share. The path trace follows an apply link on the post to the employer form. An Ashby page that only says the company is interested is not recorded as a submitted application.
+
+The Strategies tab records what worked and what failed on each platform. A human verdict of wrong blocks that step. Instagram is read from the comments and the bio before a message is sent.
+
+The first run says when dependencies are installing. Sign-in is requested once. When a site login fails, Google sign-in is tried once, and a second failure puts that site on the dashboard sign-in panel.
+
+Easy Apply waits out a stuck review step, accepts a consent widget, and waits for the next step to render. The LinkedIn invite note is taken from the dialog that is actually visible. Login-page chrome is not stored as an unanswered application question. Indeed applystart is followed until the browser leaves Indeed. A role that requires US citizenship or US work authorization is skipped when the profile is not authorized in the United States. A salary answer keeps the currency stored on the profile. Country and phone are filled from the profile.
 
 ## v3.4.0
 
