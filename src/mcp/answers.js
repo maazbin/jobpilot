@@ -65,7 +65,11 @@ function escapeRegExp(value) {
 /** Approximate USD exchange rates for salary conversion. */
 const FX = { usd: 1, eur: 0.92, gbp: 0.79, pkr: 280, inr: 84, aed: 3.67, sar: 3.75, qar: 3.64, cad: 1.37 };
 
-const CURRENT_SALARY_RE = /\b(current|present|existing|currently\s+(earn|make)|current\s+(pay|salary|compensation))\b|were you (making|earning|paid)|previous (role|job).*(salary|pay|making)|last drawn|present ctc/;
+const CURRENT_SALARY_RE = /\b(current|present|existing|currently\s+(earn|make)|current\s+(pay|salary|compensation))\b|were you (making|earning|paid)|previous (role|job).*(salary|pay|making)|last drawn|present ctc|salario actual|pretensi[oó]n actual/;
+
+// Salary wording across the languages application forms use. A Spanish "expectativa salarial"
+// used to miss this gate and stall as an unanswered question. Language alone does not pick a currency.
+const SALARY_Q = /salary|compensation|\bctc\b|expected pay|pay expectation|financial expectations?|monthly gross|gross monthly|remuneration|were you making|desired (pay|salary)|current (pay|salary)|expectativa salarial|pretensi[oó]n salarial|pretens[aã]o salarial|sal[aá]rio (esperado|desejado|pretendido)|rango salarial|banda salarial|faixa salarial|remunera[cç][aã]o|gehaltsspanne|gehaltsvorstellung|gehaltswunsch|fourchette de (salaire|r[eé]mun[eé]ration)|pr[eé]tentions? salariales?|pretesa (economica|salariale)|retribuzione attesa/i;
 
 // Detect the currency a salary question asks for. DEFAULT is PKR (the user's home market) —
 // only switch to another currency when the question explicitly names it (USD/$/dollar, etc.).
@@ -146,18 +150,25 @@ export function salaryFor(q, p, numeric = false) {
   if (!s) return numeric ? null : 'Negotiable';
 
   const baseCur = s.currency;                 // currency the stored figure is in
-  const cur = requestedCurrency(q, 'pkr');     // currency the QUESTION wants (PKR default)
+  // A question that does not name a currency keeps the stored currency. Defaulting the
+  // question to PKR while the figure was tagged USD multiplied 200000 by 280.
+  const cur = requestedCurrency(q, baseCur);
   const period = requestedPeriod(q, s.period || 'month');
   const basePeriod = s.period || 'month';
   const toMonthly = v => basePeriod === 'year' ? v / 12 : basePeriod === 'hour' ? v * 160 : v;
   const fromMonthly = v => period === 'year' ? v * 12 : period === 'hour' ? v / 160 : v;
-  // Convert from the stored currency to the requested currency via the USD table.
-  const convert = v => formatSalaryValue(fromMonthly(toMonthly(v) / (FX[baseCur] || 1) * (FX[cur] || 1)), cur, period);
+  const fxFactor = baseCur === cur ? 1 : (FX[cur] || 1) / (FX[baseCur] || 1);
+  const convert = v => formatSalaryValue(fromMonthly(toMonthly(v) * fxFactor), cur, period);
+  const expected = s.value || s.min || s.max || 0;
+  const sane = v => {
+    const band = formatSalaryValue(fromMonthly(toMonthly(expected)) * fxFactor, cur, period);
+    return band > 0 && v > band * 50 ? band : v;
+  };
 
   // Current-pay questions → single current figure. Expected → min (numeric) or min-max range.
-  if (s.isCurrent) return String(convert(s.value || s.min || 0));
-  const min = convert(s.min || s.value || 0);
-  const max = convert(s.max || s.min || 0);
+  if (s.isCurrent) return String(sane(convert(s.value || s.min || 0)));
+  const min = sane(convert(s.min || s.value || 0));
+  const max = sane(convert(s.max || s.min || 0));
   return numeric ? String(min) : (min === max ? String(min) : `${min}-${max}`);
 }
 
@@ -184,7 +195,7 @@ export function textAnswer(question, { numeric = false } = {}) {
   //    Only skip this shortcut when the question names a SPECIFIC technology that the user
   //    has an explicit per-tech answer for (those are handled by the normal learned lookup).
   const yrsProfile = p.yearsExperience ? String(p.yearsExperience) : '';
-  const isGenericYears = /\bhow many years?\b|\byears? of (hands-on |professional |work |commercial |relevant |overall |total )*(experience|exp)\b/i.test(q)
+  const isGenericYears = /\bhow many years?\b|\byears? of (hands-on |professional |work |commercial |relevant |overall |total )*(experience|exp)\b|cu[aá]ntos a[nñ]os|anos de experi|jahre (berufs|praxis)?erfahrung|ann[eé]es d.exp[eé]rience|anni di esperienza/i.test(q)
     && !/\b(with|in)\s+[a-z]/i.test(q.replace(/years? of (hands-on|professional|work|commercial|relevant|overall|total)/gi, ''));
   if (yrsProfile && isGenericYears) {
     recordAgentAnswer(question, yrsProfile, 'yearsExperience from profile (generic years question)');
@@ -195,7 +206,7 @@ export function textAnswer(question, { numeric = false } = {}) {
   //     salaryFor() — the single source of truth — before any learned/profile-answer override
   //     (those were storing verbose strings like "280,000 PKR/month (negotiable)" that don't
   //     fit numeric fields or respect the question's currency).
-  if (/salary|compensation|\bctc\b|expected pay|pay expectation|financial expectations?|monthly gross|gross monthly|remuneration|were you making|desired (pay|salary)|current (pay|salary)/.test(q)) {
+  if (SALARY_Q.test(q)) {
     const sal = salaryFor(question, p, numeric);
     if (sal != null && sal !== '') { recordAgentAnswer(question, sal, 'currency-aware salaryFor'); return sal; }
   }
@@ -235,7 +246,7 @@ export function textAnswer(question, { numeric = false } = {}) {
 
   if (/how many years|years of (work |professional )?experience|years experience|experience (do you have|in years)/.test(q)) {
     derived = years || null; basis = 'yearsExperience from profile';
-  } else if (/salary|compensation|expected pay|pay expectation|financial expectations?|monthly gross|gross monthly|\bctc\b|remuneration|\brate\b|expectation/.test(q)) {
+  } else if (SALARY_Q.test(q) || /\brate\b|expectation/.test(q)) {
     derived = salaryFor(q, p, numeric); basis = 'salary from profile';
   } else if (/first name|given name/.test(q)) {
     derived = p.firstName || first || null; basis = 'name from profile';
@@ -327,6 +338,80 @@ export function textAnswer(question, { numeric = false } = {}) {
   return null;
 }
 
+const CONSENT_Q = /\bagb\b|\bterms\b|\bconditions\b|privacy|datenschutz|confidentialit|condizioni|\btermini\b|t[eé]rminos|privacidad|polic(y|ies)|\bconsent\b|acknowledg|\bagree\b|\baccept\b|zustimm|einverstanden|bedingungen|i have read|certif|confirm that|truthful|accurate/i;
+const NEG_CONSENT_Q = /\b(do not|don't|not)\s+(agree|accept|consent)|nicht\s+zu(stimm|)|keine\s+zustimmung|je n'accepte pas|ne pas accepter|no acepto|no estoy de acuerdo/i;
+
+/** True when the question asks the applicant to accept terms, privacy, or a certification. */
+export function isConsentQuestion(question) {
+  const s = String(question || '');
+  if (!s || NEG_CONSENT_Q.test(s)) return false;
+  if (/authori[sz]ed to work|right to work|work permit|legally authori/i.test(s)) return false;
+  return CONSENT_Q.test(s);
+}
+
+/**
+ * Truthful yes/no for sponsorship, citizenship, residence, and disability.
+ * Returns null when the question is not one of those, so the caller keeps its own rule.
+ * Does not invent a skill, a disability, or a country the profile does not name.
+ * @param {string} question
+ * @param {{yesLabel?:string, noLabel?:string, workAuth?:object, country?:string}} ctx
+ * @returns {string|null}
+ */
+export function resolveYesNo(question, { yesLabel, noLabel, workAuth = {}, country = '' } = {}) {
+  const q = String(question || '').toLowerCase();
+  if (!yesLabel || !noLabel) return null;
+  const wa = workAuth || {};
+  const authIn = (Array.isArray(wa.authorizedIn) ? wa.authorizedIn : [])
+    .map(s => String(s || '').toLowerCase()).filter(Boolean);
+  const userCountry = String(country || '').toLowerCase();
+  const named = questionCountry(q);
+  const authorizedThere = named
+    ? authIn.some(c => named.includes(c) || c.includes(named) || (named === 'united states' && /\b(?:us|u\.s\.|usa|united states)\b/.test(c)))
+    : false;
+
+  if (/sponsor|visa/.test(q)) {
+    if (wa.needsSponsorship === false) return noLabel;
+    if (wa.needsSponsorship === true) return yesLabel;
+    if (named) return authorizedThere ? noLabel : yesLabel;
+    return null;
+  }
+
+  if (/disabilit|reasonable adjustments?|require (any )?(adjustments|accommodations)/.test(q)) return noLabel;
+
+  if (/\bcitizen\b|citizenship|reside in|resident of|residing in|do you live in|located in|based in|federal contractor/.test(q)) {
+    if (!named || !userCountry) return null;
+    const matchesUser = named.includes(userCountry) || userCountry.includes(named)
+      || (named === 'united states' && /\b(?:us|u\.s\.|usa|united states)\b/.test(userCountry));
+    return matchesUser ? yesLabel : noLabel;
+  }
+
+  return null;
+}
+
+/** Country a work-auth question is about. Bare "us" in "let us" is not a country. */
+function questionCountry(q) {
+  if (/\bunited states\b|\bu\.s\b|\busa\b/.test(q)) return 'united states';
+  if (/\b(?:work|visa|sponsor|citizen|residen|authori[sz]|employ).{0,48}\b(?:us|u\.s\.)\b|\b(?:us|u\.s\.)\b.{0,48}\b(?:work|visa|sponsor|citizen|residen|authori[sz]|employ)/.test(q)) return 'united states';
+  if (/\bunited kingdom\b|\bu\.k\.\b/.test(q)) return 'united kingdom';
+  if (/\bcanada\b/.test(q)) return 'canada';
+  if (/\bunited arab emirates\b|\buae\b|\bdubai\b/.test(q)) return 'united arab emirates';
+  if (/\bpakistan\b/.test(q)) return 'pakistan';
+  if (/\bindia\b/.test(q)) return 'india';
+  if (/\bgermany\b|\bdeutschland\b/.test(q)) return 'germany';
+  if (/\bfrance\b/.test(q)) return 'france';
+  if (/\bspain\b|\bespa[nñ]a\b/.test(q)) return 'spain';
+  return '';
+}
+
+const NUM_WORDS = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10 };
+function looseOption(s) {
+  return String(s || '').toLowerCase()
+    .replace(/\b(one|two|three|four|five|six|seven|eight|nine|ten)\b/g, m => NUM_WORDS[m])
+    .replace(/\b(within|in|after|by|approximately|about|around)\b/g, ' ')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
 /**
  * Choose among options (radio/select). Returns the option text to pick, or null if unknown.
  * @param {string} question
@@ -344,7 +429,8 @@ export function choiceAnswer(question, options) {
   const learned = learnedAnswer(question);
   if (learned) {
     const m = opts.find(o => o.toLowerCase() === learned.toLowerCase())
-      || opts.find(o => o.toLowerCase().startsWith(learned.toLowerCase()));
+      || opts.find(o => o.toLowerCase().startsWith(learned.toLowerCase()))
+      || opts.find(o => looseOption(o) && looseOption(o) === looseOption(learned));
     if (m) { usedAnswer(question); return m; }
   }
 
@@ -367,7 +453,13 @@ export function choiceAnswer(question, options) {
   let basis = '';
 
   if (yes && no) {
-    if (/sponsor|visa/.test(q)) {
+    const yn = resolveYesNo(question, {
+      yesLabel: yes, noLabel: no, workAuth: wa,
+      country: p.country || (p.location || '').split(',').pop().trim(),
+    });
+    if (yn) {
+      derived = yn; basis = 'yes/no from work authorization and country';
+    } else if (/sponsor|visa/.test(q)) {
       derived = wa.needsSponsorship ? yes : no; basis = 'workAuth.needsSponsorship from profile';
     } else if (/relocat/.test(q)) {
       derived = wa.willingToRelocate ? yes : no; basis = 'workAuth.willingToRelocate from profile';
