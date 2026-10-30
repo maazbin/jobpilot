@@ -682,7 +682,23 @@ export async function easyApply({ url, timeoutMs = 120000, dryRun = false, job =
       if (!(await next.isVisible().catch(() => false))) { await encounter('easy_apply', 'no next/submit button', { url, page, scope: dlg }); break; }
       await next.click().catch(() => {});
       await SLEEP(1600);
-      const st = await dlg.evaluate(SCAN).catch(() => ({ progress: '', errors: [] }));
+      let st = await dlg.evaluate(SCAN).catch(() => ({ progress: '', errors: [] }));
+      if (st.progress === lastProgress && st.progress) {
+        // STALL RECOVERY: the progress bar didn't move. Before treating this as "stuck",
+        // give the dialog extra time to re-render, then re-analyze + re-fill and retry the
+        // advance once. Most "all fields resolved but page would not advance" encounters are a
+        // render/timing race on the review step, not a missing answer — this clears them without
+        // a human round-trip (root cause of evolution encounters #20/#21/#22).
+        await SLEEP(1800);
+        const reanalysis = await analyzePage(dlg, ctx).catch(() => null);
+        if (!reanalysis || !reanalysis.blocking.length) {
+          await fillPage(page, dlg, ctx, job).catch(() => {});
+          await SLEEP(600);
+          const retryNext = dlg.getByRole('button', { name: /continue to next step|review your application|^next$|^review$/i }).first();
+          if (await retryNext.isVisible().catch(() => false)) { await retryNext.click().catch(() => {}); await SLEEP(1800); }
+          st = await dlg.evaluate(SCAN).catch(() => st);
+        }
+      }
       if (st.progress === lastProgress && st.progress) {
         same++;
         // a validation error usually means a numeric field got text, or a choice we didn't pick
