@@ -313,6 +313,9 @@ export function answerByKey(key, answer, source = 'user') {
  * @param {string[]} [options]
  */
 export function askLater(question, options = []) {
+  // Login fields and site chrome are not application questions.
+  if (/pass(word|code)|otp|one[- ]?time (code|pass)|verification code|2fa|two[- ]factor/i.test(String(question || ''))) return;
+  if (/^(i'?m a candidate|for job seekers|sign in|join now|0 notifications|home|my network|for business)\b/i.test(String(question || '').trim())) return;
   const k = qkey(question);
   if (!k) return;
 
