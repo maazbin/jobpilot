@@ -151,7 +151,7 @@ export function salaryFor(q, p, numeric = false) {
 
   const baseCur = s.currency;                 // currency the stored figure is in
   // A question that does not name a currency keeps the stored currency. Defaulting the
-  // question to PKR while the figure was tagged USD multiplied 200000 by 280.
+  // question to a different currency multiplied the stored figure by the FX rate.
   const cur = requestedCurrency(q, baseCur);
   const period = requestedPeriod(q, s.period || 'month');
   const basePeriod = s.period || 'month';

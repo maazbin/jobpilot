@@ -12,31 +12,31 @@ const check = (name, actual, expected) => {
 const usdProfile = {
   salary: {},
   currentSalary: {},
-  salaryExpectations: [{ country: 'Fixture', min: 200000, max: 200000, currency: 'USD', period: 'month' }],
+  salaryExpectations: [{ country: 'Fixture', min: 4000, max: 4000, currency: 'USD', period: 'month' }],
   answers: {},
 };
-check('unnamed salary keeps the stored USD figure', salaryFor('Desired salary', usdProfile, true), '200000');
+check('unnamed salary keeps the stored USD figure', salaryFor('Desired salary', usdProfile, true), '4000');
 
-const pkrProfile = {
+const eurProfile = {
   salary: {},
   currentSalary: {},
-  salaryExpectations: [{ country: 'Fixture', min: 280000, max: 280000, currency: 'PKR', period: 'month' }],
+  salaryExpectations: [{ country: 'Fixture', min: 3000, max: 3000, currency: 'EUR', period: 'month' }],
   answers: {},
 };
-check('a USD question converts PKR instead of echoing it', salaryFor('Desired salary in USD', pkrProfile, true), '1000');
-check('spanish salary question is recognized', salaryFor('¿Cuál es tu expectativa salarial?', pkrProfile, true), '280000');
+check('a USD question converts EUR instead of echoing it', salaryFor('Desired salary in USD', eurProfile, true), '3300');
+check('spanish salary question is recognized', salaryFor('¿Cuál es tu expectativa salarial?', eurProfile, true), '3000');
 
 const yn = (q, country, authorizedIn = [], needsSponsorship) => resolveYesNo(q, {
   yesLabel: 'Yes', noLabel: 'No',
   workAuth: { authorizedIn, needsSponsorship },
   country,
 });
-check('US citizen question is No for a non-US country', yn('Are you a U.S. citizen?', 'Pakistan'), 'No');
-check('home-country residence is Yes', yn('Do you reside in Pakistan?', 'Pakistan'), 'Yes');
-check('sponsorship in a country they are not authorized for is Yes', yn('Will you require sponsorship for a US work visa?', 'Pakistan', ['Pakistan']), 'Yes');
-check('sponsorship flag false stays No', yn('Do you require visa sponsorship in the UAE?', 'Pakistan', [], false), 'No');
-check('disability is not invented', yn('Do you have a disability?', 'Pakistan'), 'No');
-check('unrelated yes/no is left to the caller', yn('Are you comfortable with startups?', 'Pakistan'), null);
+check('US citizen question is No for a non-US country', yn('Are you a U.S. citizen?', 'Canada'), 'No');
+check('home-country residence is Yes', yn('Do you reside in Canada?', 'Canada'), 'Yes');
+check('sponsorship in a country they are not authorized for is Yes', yn('Will you require sponsorship for a US work visa?', 'Canada', ['Canada']), 'Yes');
+check('sponsorship flag false stays No', yn('Do you require visa sponsorship in the UAE?', 'Canada', [], false), 'No');
+check('disability is not invented', yn('Do you have a disability?', 'Canada'), 'No');
+check('unrelated yes/no is left to the caller', yn('Are you comfortable with startups?', 'Canada'), null);
 
 check('privacy acceptance is consent', isConsentQuestion('I agree to the privacy policy'), true);
 check('work authorization is not consent', isConsentQuestion('Are you authorized to work in the United States?'), false);
