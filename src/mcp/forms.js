@@ -36,6 +36,22 @@ async function closeBlockingOverlays(page) {
 }
 const CONFIRM_RE = /thank(s| you) for (applying|your application)|application (has been |was )?(received|submitted|sent)|we.?ve received your application|successfully (applied|submitted)|your application is (complete|submitted|received)|application submitted|applied successfully|you('ve| have) applied|congrat|we will be in touch|we.?ll be in touch|check your email.*application/i;
 
+const PLACE_Q = /country|nationalit|location|\bcity\b|where.*(based|located|work|live|reside)/i;
+
+/** A country list is alphabetical, so the first row is Afghanistan. Only a row that
+ *  names this profile's country or city may be chosen. '' means do not click. */
+export function listedPlaceOption(question, optionText, profile = {}) {
+  if (!PLACE_Q.test(String(question || ''))) return null;
+  const text = String(optionText || '').replace(/\s+/g, ' ').trim();
+  const q = String(question || '').toLowerCase();
+  const country = String(profile.country || '').trim().toLowerCase();
+  const city = String(profile.location || '').split(',')[0].trim().toLowerCase();
+  const lo = text.toLowerCase();
+  if (/country|nationalit/.test(q)) return country && lo.includes(country) ? text : '';
+  if ((city && lo.includes(city)) || (country && lo.includes(country))) return text;
+  return '';
+}
+
 const SCAN = () => {
   const vis = el => { const r = el.getBoundingClientRect(); const s = getComputedStyle(el); return (r.width > 0 || r.height > 0 || el.type === 'file' || el.type === 'radio' || el.type === 'checkbox') && s.visibility !== 'hidden'; };
   const qOf = el => {
@@ -471,6 +487,13 @@ async function fillAll(page, unknown, job = {}) {
         continue;
       }
       if (f.tag === 'SELECT') {
+        if (PLACE_Q.test(f.q)) {
+          const place = (f.opts || []).map(o => listedPlaceOption(f.q, o, p)).find(Boolean);
+          if (f.val && listedPlaceOption(f.q, f.val, p)) continue;
+          if (!place) { if (f.required || f.val) unknown.add(f.q); continue; }
+          await loc.selectOption({ label: place }).catch(() => {});
+          continue;
+        }
         if (f.val) continue;
         const pick = choiceAnswer(f.q, f.opts.slice(1)) ; if (pick) await loc.selectOption({ label: pick }).catch(() => {}); else if (f.required) unknown.add(f.q);
         continue;
@@ -480,12 +503,21 @@ async function fillAll(page, unknown, job = {}) {
         // react-select: open, read options, pick
         await loc.click().catch(() => {}); await SLEEP(600);
         const opts = await page.locator('[role="option"]').allInnerTexts().catch(() => []);
+        if (PLACE_Q.test(f.q)) {
+          const place = opts.map(o => listedPlaceOption(f.q, o, p)).find(Boolean);
+          if (!place) { if (f.required) unknown.add(f.q); await page.keyboard.press('Escape').catch(() => {}); continue; }
+          const opt = page.locator('[role="option"]').filter({ hasText: place }).first();
+          if (await opt.isVisible().catch(() => false)) await opt.click().catch(() => {});
+          else if (f.required) unknown.add(f.q);
+          await page.keyboard.press('Escape').catch(() => {});
+          continue;
+        }
         let pick = opts.length ? choiceAnswer(f.q, opts) : textAnswer(f.q);
         if (!opts.length && pick) { await loc.fill(pick); await SLEEP(1200); }
         const key = pick ? pick.split(/[\s+(]/).filter(Boolean)[0].replace(/[.*+?^${}()|[\]\\]/g, '\\$&') : '';
-        const opt = key ? page.locator('[role="option"]').filter({ hasText: new RegExp('^\\s*' + key, 'i') }).first() : page.locator('[role="option"]').first();
-        if (await opt.isVisible().catch(() => false)) await opt.click().catch(() => {});
-        else { await loc.press('Enter').catch(() => {}); if (f.required && !pick) unknown.add(f.q); }
+        const opt = key ? page.locator('[role="option"]').filter({ hasText: new RegExp('^\\s*' + key, 'i') }).first() : null;
+        if (opt && await opt.isVisible().catch(() => false)) await opt.click().catch(() => {});
+        else { if (pick) await loc.press('Enter').catch(() => {}); if (f.required && !pick) unknown.add(f.q); }
         await page.keyboard.press('Escape').catch(() => {});
         continue;
       }
@@ -495,11 +527,27 @@ async function fillAll(page, unknown, job = {}) {
       if (v == null || v === '') { if (f.required) unknown.add(f.q); continue; }
       await loc.fill(String(v));
       if (/phone|mobile/i.test(f.q)) await page.keyboard.press('Escape').catch(() => {});
-      if (/location|city/i.test(f.q)) { await SLEEP(1200); const o = page.locator('[role="option"], .pac-item').first(); if (await o.isVisible().catch(() => false)) await o.click().catch(() => {}); }
+      if (PLACE_Q.test(f.q)) {
+        await SLEEP(1200);
+        const texts = (await page.locator('[role="option"], .pac-item').allInnerTexts().catch(() => [])).map(t => t.trim()).filter(Boolean);
+        if (texts.length) {
+          const place = texts.map(t => listedPlaceOption(f.q, t, p)).find(Boolean);
+          if (place) {
+            const o = page.locator('[role="option"], .pac-item').filter({ hasText: place }).first();
+            if (await o.isVisible().catch(() => false)) await o.click().catch(() => {});
+          } else if (f.required) unknown.add(f.q);
+        }
+      }
     } catch {}
   }
   for (const g of Object.values(radios)) {
     if (g.some(r => r.checked)) continue;
+    if (PLACE_Q.test(g[0].q)) {
+      const r = g.find(x => listedPlaceOption(g[0].q, x.optLabel, p));
+      if (!r) { unknown.add(g[0].q); continue; }
+      await page.locator(`[data-jf="${r.id}"]`).check({ force: true }).catch(() => {});
+      continue;
+    }
     const pick = choiceAnswer(g[0].q, g.map(r => r.optLabel));
     const r = g.find(x => x.optLabel === pick) || g[0];
     await page.locator(`[data-jf="${r.id}"]`).check({ force: true }).catch(() => {});
