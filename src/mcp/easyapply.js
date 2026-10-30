@@ -358,7 +358,16 @@ async function fillPage(page, dlg, ctx, job = {}) {
         let pick = null;
         // Identity selects (email / phone country code): pick the option matching the profile.
         if (/e-?mail/i.test(f.q)) pick = selOpts.find(o => o.toLowerCase() === (p.email || '').toLowerCase()) || selOpts.find(o => /@/.test(o));
-        else if (/country code|phone/i.test(f.q)) pick = selOpts.find(o => /\(\+?92\)|pakistan/i.test(o));
+        else if (/country code|phone/i.test(f.q)) {
+          const country = String(p.country || '').toLowerCase();
+          const digits = String(p.phone || '').replace(/\D/g, '');
+          pick = selOpts.find(o => {
+            const lo = o.toLowerCase();
+            if (country && lo.includes(country)) return true;
+            const code = (o.match(/\+(\d+)/) || [])[1];
+            return !!(code && digits.startsWith(code));
+          }) || null;
+        }
         const agentSel = pick ? undefined : agentAnswerFor(ctx, f.q);
         if (agentSel !== undefined) { const a = String(Array.isArray(agentSel) ? agentSel[0] : agentSel).toLowerCase(); pick = selOpts.find(o => o.toLowerCase() === a) || selOpts.find(o => o.toLowerCase().includes(a) || a.includes(o.toLowerCase())) || null; }
         if (!pick) pick = choiceAnswer(f.q, selOpts);
@@ -527,7 +536,7 @@ async function fillPage(page, dlg, ctx, job = {}) {
       const numeric = f.numeric || isSalary || /how many|years|number of/i.test(f.q);
       const agentV = agentAnswerFor(ctx, f.q);
       let v = agentV !== undefined ? (Array.isArray(agentV) ? agentV.join(', ') : String(agentV)) : textAnswer(f.q, { numeric });
-      if ((v == null || v === '') && /which country.*(reside|live|based)|country of residence/i.test(f.q)) v = p.country || 'Pakistan';
+      if ((v == null || v === '') && p.country && /which country.*(reside|live|based)|country of residence/i.test(f.q)) v = p.country;
       if (isSalary && numeric) { const s = salaryFor(/\busd\b|\$/i.test(f.q) ? f.q + ' usd' : f.q, p, true); if (s != null) v = String(s).replace(/[^\d]/g, ''); }
       if (v == null || v === '') continue;
       if (f.tag === 'SELECT') {
@@ -607,7 +616,7 @@ async function analyzePage(dlg, ctx = {}) {
       const numeric = f.numeric || isSalary || /how many|years|number of/i.test(q);
       const agent = agentAnswerFor(ctx, q);
       let v = agent !== undefined ? (Array.isArray(agent) ? agent.join(', ') : String(agent)) : textAnswer(q, { numeric });
-      if ((v == null || v === '') && /which country.*(reside|live|based)|country of residence/i.test(q)) v = p.country || 'Pakistan';
+      if ((v == null || v === '') && p.country && /which country.*(reside|live|based)|country of residence/i.test(q)) v = p.country;
       decision = v; reason = v != null ? 'answered from profile/rules' + (f.maxlength ? ` (max ${f.maxlength})` : '') : (isOptionalConsent(q) ? 'optional — skip' : 'UNRESOLVED');
     }
     const resolved = decision != null && decision !== '' || /skip|optional/i.test(reason);

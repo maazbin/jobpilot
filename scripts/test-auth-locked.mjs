@@ -8,7 +8,7 @@ const check = (name, actual, expected) => {
   if (!ok) fail++;
 };
 
-const outsider = { workAuth: { authorizedIn: ['Pakistan'] } };
+const outsider = { workAuth: { authorizedIn: ['Canada'] } };
 const citizen = { workAuth: { authorizedIn: ['United States'] } };
 check('US citizens only is locked', authLocked('Remote. US citizens only.', outsider), true);
 check('US citizens only is open for a US-authorized profile', authLocked('Remote. US citizens only.', citizen), false);
