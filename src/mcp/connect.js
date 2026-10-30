@@ -430,7 +430,9 @@ export async function connect({ profileUrl, posterName, role, company, withNote 
     // The invite dialog (role=dialog / artdeco modal, or the 2026 native <dialog>) carries the
     // Send control. Wait up to 8 s for ANY dialog/modal to appear after the Connect/Add-note click.
     // The 2026 LinkedIn UI uses obfuscated gfl* class names — we can't rely on .artdeco-modal.
-    const inviteDlg = page.locator('div[role="dialog"], dialog[open], [data-test-modal], [data-artdeco-is-focused-dialog]').first();
+    // Hidden stale dialogs stay in the DOM. The first match can be one of those, so the
+    // send lookup never sees the live invite modal. Keep only visible overlays.
+    const inviteDlg = page.locator('div[role="dialog"]:visible, dialog[open]:visible, [data-test-modal]:visible, [data-artdeco-is-focused-dialog]:visible').first();
     await inviteDlg.waitFor({ state: 'visible', timeout: 8000 }).catch(async () => {
       // 2026 LinkedIn may use a non-standard overlay without role=dialog.
       // Fall back: wait for any new visible button containing "send" text to appear.
