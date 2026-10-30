@@ -56,6 +56,16 @@ export function countryLocked(text = '') {
   return false;
 }
 
+// US citizenship, clearance, or US work-authorization prose. A timezone overlap does not match.
+const CITIZENSHIP_REQ = /\b(?:u\.?s\.?|united states)\s+citizens?(?:hip)?\s+(?:required|only)\b|\bmust be (?:a\s+)?u\.?s\.?\s+citizen\b|\ball employees?\s+(?:are|must be)\s+u\.?s\.?\s+citizens?\b|\bfederal contractor\b|\bsecurity clearance\b|\bmust (?:be |already )?(?:legally )?(?:authorized|able) to work (?:in|within) (?:the )?(?:us|u\.s\.|usa|united states)\b|\brequires? (?:us|u\.s\.|united states) work authorization\b/i;
+
+/** True when the text requires US citizenship or US work authorization the profile does not hold. */
+export function authLocked(text = '', profile = {}) {
+  if (!CITIZENSHIP_REQ.test(String(text))) return false;
+  const authIn = (profile?.workAuth?.authorizedIn || []).map(s => String(s).toLowerCase());
+  return !authIn.some(c => /\b(?:us|u\.s\.|usa|united states)\b/.test(c));
+}
+
 /** @returns {{ keep: boolean, why: string }} */
 export function leadKeep(text = '', profile = {}) {
   if (!keepRemoteOrVisaEnabled(profile)) return { keep: true, why: '' };
@@ -63,6 +73,7 @@ export function leadKeep(text = '', profile = {}) {
   const remote = REMOTE.test(slice);
   const locked = countryLocked(slice);
   const offer = listedOffer(slice, profile);
+  if (authLocked(slice, profile) && !offer) return { keep: false, why: 'requires US citizenship or US work authorization the profile does not have' };
   if (remote && !locked) return { keep: true, why: '' };
   if (offer) return { keep: true, why: '' };
   if (locked) return { keep: false, why: 'remote is limited to a country list' };
