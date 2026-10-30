@@ -6,13 +6,14 @@
 //   • success is VERIFIED by reloading the job and reading "Application submitted"
 import { getContext } from '../agent/browser.js';
 import { getProfile } from '../profile.js';
-import { textAnswer, choiceAnswer, salaryFor } from './answers.js';
+import { textAnswer, choiceAnswer, salaryFor, isConsentQuestion } from './answers.js';
 import { learn, askLater, encounter } from '../evolve.js';
 import fs from 'fs';
 import { cvAttachmentForJob, selectCvVariant } from '../cv.js';
 import { setFields } from '../tracker.js';
 
 const SLEEP = ms => new Promise(r => setTimeout(r, ms));
+const STEP_BUTTON = /continue to next step|review your application|accept and continue|^next$|^review$/i;
 const APPLIED_RE = /Application submitted|Applied \d+ (second|minute|hour|day)s? ago|You applied|application was sent/i;
 const LINKEDIN_THROTTLE_RE = /security check|security verification|unusual activity|doing that too (much|often|fast)|try again later|rate limit|temporarily (restricted|blocked)|verify you.?re a human|captcha|\/checkpoint\//i;
 
@@ -196,9 +197,15 @@ async function checkOption(page, dataJa, optText, groupName, grpIdx = -1) {
   if (!snap) return false;
   const nm = groupName || snap.name || '';
   const gi = Number.isInteger(grpIdx) ? grpIdx : -1;
+  // A lone checkbox has no name and no fieldset. React replaces the input on click, so asking
+  // the stale node "are you checked?" says no and the next click toggles it back off.
+  const standalone = snap.type === 'checkbox' && !nm && gi < 0;
+  const checkedCount = () => page.evaluate(() => [...document.querySelectorAll('input[type="checkbox"]')].filter(i => i.checked).length).catch(() => -1);
+  const baseChecked = standalone ? await checkedCount() : -1;
   // Verify FRESH whether an input in this group is now checked — by name, else by the enclosing
   // fieldset index (2026 nameless groups), never via the stale/destroyed node.
   const groupChecked = async () => {
+    if (standalone) { const n = await checkedCount(); return baseChecked >= 0 && n === baseChecked + 1; }
     if (nm) return page.evaluate(n => [...document.querySelectorAll(`input[name="${CSS.escape(n)}"]`)].some(i => i.checked), nm).catch(() => false);
     if (gi >= 0) return page.evaluate(idx => {
       const fs = [...document.querySelectorAll('fieldset, [role="group"], [role="radiogroup"]')][idx];
@@ -214,8 +221,8 @@ async function checkOption(page, dataJa, optText, groupName, grpIdx = -1) {
       await lbl.scrollIntoViewIfNeeded().catch(() => {});
       const box = await lbl.boundingBox().catch(() => null);
       await lbl.click({ force: true, timeout: 2000 }).catch(() => {});
-      // after re-render the label still clicks; also try a raw mouse click at its coords
-      if (box) await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2).catch(() => {});
+      // A second click on a checkbox toggles it back off. Only fall back when it is still unchecked.
+      if (box && !(await groupChecked())) await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2).catch(() => {});
     }
   };
   // NATIVE CDP click at the label's center — a REAL OS-level mouse event that React cannot
@@ -227,7 +234,20 @@ async function checkOption(page, dataJa, optText, groupName, grpIdx = -1) {
     if (!(await lbl.count().catch(() => 0)) && optText) {
       lbl = page.locator('label').filter({ hasText: new RegExp(`^\\s*${optText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`, 'i') }).first();
     }
-    const box = await lbl.boundingBox().catch(() => null);
+    let box = await lbl.boundingBox().catch(() => null);
+    // 2026 radios are 0×0 inputs. The visible widget is a separate label. Click the smallest
+    // visible label or role that contains the input's origin.
+    if (!box) box = await loc.evaluate(el => {
+      const r = el.getBoundingClientRect();
+      const px = (r.x || r.left) + 4, py = (r.y || r.top) + 4;
+      const hits = [...document.querySelectorAll('label, [role="radio"], [role="checkbox"]')]
+        .map(n => { const b = n.getBoundingClientRect(); return { b, area: b.width * b.height }; })
+        .filter(c => c.b.width > 0 && c.b.height > 0 && px >= c.b.x && px <= c.b.right && py >= c.b.y && py <= c.b.bottom)
+        .sort((a, b) => a.area - b.area);
+      if (!hits.length) return null;
+      const b = hits[0].b;
+      return { x: b.x, y: b.y, width: b.width, height: b.height };
+    }).catch(() => null);
     if (!box) return false;
     const x = box.x + box.width / 2, y = box.y + box.height / 2;
     try {
@@ -304,6 +324,12 @@ async function fillPage(page, dlg, ctx, job = {}) {
   // (single consent/privacy/terms boxes) are still handled inline in the per-field loop.
   const groupedCbIds = new Set();
   for (const [q, g] of Object.entries(cbGroups)) if (g.length >= 2 && q && q.length > 8) g.forEach(f => groupedCbIds.add(f.id));
+  // Education editor month/year selects render empty even when the entry text already has dates.
+  // Reuse those dates. Do not invent a date that is not on the page.
+  const dlgText = await dlg.innerText().catch(() => '');
+  const datePair = dlgText.match(/(\d{1,2})\s*\/\s*(\d{4})\s*[-–]\s*(\d{1,2})\s*\/\s*(\d{4})/) || [];
+  const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+  let dateSel = 0;
 
   for (const f of fields) {
     const loc = page.locator(`[data-ja="${f.id}"]`);
@@ -318,7 +344,11 @@ async function fillPage(page, dlg, ctx, job = {}) {
         // Optional consent/marketing/follow boxes: never auto-check, uncheck if preselected,
         // and never treat as blocking. These are the ones that used to stall the whole apply.
         if (isOptionalConsent(f.q) || isOptionalConsent(f.optLabel)) { if (f.checked) await loc.uncheck({ force: true }).catch(() => {}); continue; }
-        if (!f.checked && f.required) await loc.check({ force: true }).catch(() => {});
+        // Terms consent is a gate even when the input itself is not marked required.
+        if (!f.checked && (f.required || isConsentQuestion(f.q))) {
+          const okCb = await checkOption(page, f.id, f.optLabel || '', f.name || '', -1).catch(() => false);
+          if (!okCb) await loc.check({ force: true }).catch(() => {});
+        }
         if (f.checked && /follow/i.test(f.q + f.optLabel)) await loc.uncheck({ force: true }).catch(() => {});
         continue;
       }
@@ -339,6 +369,11 @@ async function fillPage(page, dlg, ctx, job = {}) {
           const byText = (re) => selOpts[opts.findIndex(o => re.test(o))];
           if (opts.some(o => /job posting|linkedin|job board|online|search engine|other/.test(o)))
             pick = byText(/linkedin/) || byText(/job posting/) || byText(/job board|online/) || byText(/search engine/) || byText(/^other$/);
+        }
+        if (!pick && datePair.length && /edit education|dates attended/i.test(dlgText) && (/^(month|year)$/i.test((f.opts[0] || '').trim()) || /^(month|year)$/i.test(f.q))) {
+          const want = [MONTHS[+datePair[1] - 1], datePair[2], MONTHS[+datePair[3] - 1], datePair[4]][dateSel];
+          dateSel++;
+          if (want) pick = selOpts.find(o => o.trim() === want) || null;
         }
         // Last resort for ANY required select: never leave it empty — pick a neutral/first option.
         if (!pick && f.required && !isOptionalConsent(f.q)) {
@@ -418,6 +453,12 @@ async function fillPage(page, dlg, ctx, job = {}) {
       if (!pick && /^n/.test(a)) pick = effLabels.find(l => /^no/i.test(l));
     }
     if (!pick) pick = choiceAnswer(g[0].q, effLabels);
+    // One nameless consent radio has no option text for choiceAnswer to match. Accept it only
+    // when the question is terms/privacy and the yes/no answer is yes.
+    if (!pick && g.length === 1 && isConsentQuestion(g[0].q)) {
+      const yes = choiceAnswer(g[0].q, ['Yes', 'No']);
+      if (yes && /^yes/i.test(yes)) pick = effLabels.find(Boolean) || 'Yes';
+    }
     if (process.env.DEBUG_EA) console.log('RADIO', JSON.stringify({ q: g[0].q, raw: rawLabels, eff: effLabels, agent: agentR, pick }));
     if (!pick) {
       if (isOptionalConsent(g[0].q)) continue; // optional consent radio → don't block
@@ -503,6 +544,20 @@ async function fillPage(page, dlg, ctx, job = {}) {
   } catch {}
 }
 
+// A step change briefly shows a loader with no fields and no footer buttons. Reading that
+// gap as "no next button" aborted forms that were still loading.
+async function waitForStepRender(dlg, ms = 8000) {
+  const t0 = Date.now();
+  while (Date.now() - t0 < ms) {
+    const hasFields = await dlg.evaluate(d => d.querySelectorAll('input:not([type="hidden"]), select, textarea').length > 0).catch(() => false);
+    if (hasFields) return true;
+    const btn = dlg.getByRole('button', { name: STEP_BUTTON }).first();
+    if (await btn.isVisible().catch(() => false)) return true;
+    await SLEEP(350);
+  }
+  return false;
+}
+
 // ── REASONING / ANALYSIS STEP ─────────────────────────────────────────────────
 // Every LinkedIn Easy Apply form is different, so before (and after) filling we ANALYZE the
 // whole page: classify each field, decide the intended answer + why, and flag which required
@@ -522,13 +577,14 @@ async function analyzePage(dlg, ctx = {}) {
     if (f.type === 'hidden') continue;
     let decision = null, reason = '', kind = f.type;
     let q = f.q || f.optLabel || f.name;
+    let g = null;
 
     if (f.type === 'file') { decision = 'attach CV'; reason = 'resume upload'; }
     else if (f.type === 'radio' || f.type === 'checkbox') {
       const key = groupKey(f); if (seen.has(key)) continue; seen.add(key);
-      const g = (f.type === 'radio' ? radioByGroup : cbByGroup)[key] || [f];
+      g = (f.type === 'radio' ? radioByGroup : cbByGroup)[key] || [f];
       if (f.type === 'checkbox' && g.length < 2) { // standalone consent checkbox
-        decision = isOptionalConsent(f.q) ? 'leave unchecked' : (f.required ? 'check' : 'skip'); reason = 'single checkbox'; q = f.q;
+        decision = isOptionalConsent(f.q) ? 'leave unchecked' : (f.required || isConsentQuestion(f.q) ? 'check' : 'skip'); reason = 'single checkbox'; q = f.q;
       } else {
         const gm = f.grpIdx >= 0 ? groupByIdx[f.grpIdx] : null;
         q = ((gm && gm.question) || g[0].q || '').trim();
@@ -659,6 +715,7 @@ export async function easyApply({ url, timeoutMs = 120000, dryRun = false, job =
 
     let lastProgress = '', same = 0;
     for (let step = 0; step < 15 && Date.now() - t0 < timeoutMs; step++) {
+      await waitForStepRender(dlg);
       // PER-STEP REASONING: analyze this page (what each field needs + why), fill, then
       // re-analyze and re-fill once if required fields remain. The engine reasons at EVERY
       // step of the Easy Apply, not only once or only when stuck.
@@ -678,10 +735,21 @@ export async function easyApply({ url, timeoutMs = 120000, dryRun = false, job =
         await page.close().catch(() => {});
         return { ok, result: ok ? 'applied' : 'stuck', detail: ok ? `submitted + verified (${step + 1} pages)` : 'submit not confirmed', meta, used: ctx.used };
       }
-      const next = dlg.getByRole('button', { name: /continue to next step|review your application|^next$|^review$/i }).first();
-      if (!(await next.isVisible().catch(() => false))) { await encounter('easy_apply', 'no next/submit button', { url, page, scope: dlg }); break; }
+      const saveBtn = dlg.getByRole('button', { name: /^save$/i }).first();
+      if (await saveBtn.isVisible().catch(() => false)) {
+        await saveBtn.click().catch(() => {});
+        await SLEEP(1200);
+        continue;
+      }
+      const next = dlg.getByRole('button', { name: STEP_BUTTON }).first();
+      if (!(await next.isVisible().catch(() => false))) {
+        await waitForStepRender(dlg, 6000);
+        if (!(await next.isVisible().catch(() => false)) && !(await submit.isVisible().catch(() => false))) {
+          await encounter('easy_apply', 'no next/submit button', { url, page, scope: dlg }); break;
+        }
+      }
       await next.click().catch(() => {});
-      await SLEEP(1600);
+      await waitForStepRender(dlg, 8000);
       let st = await dlg.evaluate(SCAN).catch(() => ({ progress: '', errors: [] }));
       if (st.progress === lastProgress && st.progress) {
         // STALL RECOVERY: the progress bar didn't move. Before treating this as "stuck",
@@ -694,7 +762,7 @@ export async function easyApply({ url, timeoutMs = 120000, dryRun = false, job =
         if (!reanalysis || !reanalysis.blocking.length) {
           await fillPage(page, dlg, ctx, job).catch(() => {});
           await SLEEP(600);
-          const retryNext = dlg.getByRole('button', { name: /continue to next step|review your application|^next$|^review$/i }).first();
+          const retryNext = dlg.getByRole('button', { name: STEP_BUTTON }).first();
           if (await retryNext.isVisible().catch(() => false)) { await retryNext.click().catch(() => {}); await SLEEP(1800); }
           st = await dlg.evaluate(SCAN).catch(() => st);
         }
@@ -808,7 +876,7 @@ export async function inspectEasyApply({ url, timeoutMs = 120000 }) {
       pages.push({ step, heading: scan.heading, fields: logical });
       const submit = dlg.getByRole('button', { name: /submit application/i }).first();
       if (await submit.isVisible().catch(() => false)) break;
-      const next = dlg.getByRole('button', { name: /continue to next step|review your application|^next$|^review$/i }).first();
+      const next = dlg.getByRole('button', { name: STEP_BUTTON }).first();
       if (!(await next.isVisible().catch(() => false))) break;
       await next.click().catch(() => {});
       await SLEEP(1500);
@@ -847,10 +915,12 @@ export async function applyEasyApplyWithAnswers({ url, answers = {}, timeoutMs =
         await page.close().catch(() => {});
         return { ok: okv, result: okv ? 'applied' : 'stuck', detail: okv ? `submitted + verified (${step + 1} pages)` : 'submit not confirmed', used: ctx.used };
       }
-      const next = dlg.getByRole('button', { name: /continue to next step|review your application|^next$|^review$/i }).first();
-      if (!(await next.isVisible().catch(() => false))) break;
+      const saveBtn = dlg.getByRole('button', { name: /^save$/i }).first();
+      if (await saveBtn.isVisible().catch(() => false)) { await saveBtn.click().catch(() => {}); await SLEEP(1200); continue; }
+      const next = dlg.getByRole('button', { name: STEP_BUTTON }).first();
+      if (!(await next.isVisible().catch(() => false))) { await waitForStepRender(dlg, 6000); if (!(await next.isVisible().catch(() => false))) break; }
       await next.click().catch(() => {});
-      await SLEEP(1600);
+      await waitForStepRender(dlg, 8000);
       const st = await dlg.evaluate(SCAN).catch(() => ({ progress: '' }));
       if (st.progress && st.progress === lastProgress) { if (++same >= 2) { const a = await analyzePage(dlg, ctx).catch(() => null); const blk = a ? a.blocking.map(b => `${b.q} (${b.reason})`).join(' | ') : ''; await discard(page); await page.close(); return { ok: false, result: 'stuck', detail: 'could not advance — ' + (blk || 'validation'), blocking: a?.blocking || [] }; } } else same = 0;
       lastProgress = st.progress;
