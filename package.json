@@ -1,6 +1,6 @@
 {
   "name": "jobpilot",
-  "version": "3.4.0",
+  "version": "3.5.0",
   "description": "JobPilot — a self-evolving, agent-driven job hunter. An MCP server with no LLM of its own: your coding agent (Claude Code, Codex, Kiro, Crew, Grok) is the brain. Drives YOUR logged-in Chrome to apply via email, LinkedIn Easy Apply, external ATS forms, and connection requests. Learns from every failure.",
   "type": "module",
   "license": "MIT",
