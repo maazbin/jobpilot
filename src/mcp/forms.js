@@ -139,9 +139,19 @@ async function resolveIndeed(page) {
   if (found.redirect) {
     try {
       await page.goto(found.redirect, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
-      await SLEEP(3500);
-      const dest = page.url();
-      if (dest && !/indeed\.com/.test(dest)) return dest;
+      // /applystart hops indeed → tracker → employer ATS. One read often catches the middle hop.
+      let dest = page.url();
+      let stableOff = '';
+      for (let i = 0; i < 8; i++) {
+        await SLEEP(1500);
+        const now = page.url();
+        if (now && !/indeed\.com/i.test(now)) {
+          if (now === dest) { stableOff = now; break; }
+        }
+        dest = now;
+      }
+      if (stableOff) return stableOff;
+      if (dest && !/indeed\.com/i.test(dest)) return dest;
     } catch { /* fall through */ }
   }
   return null;
