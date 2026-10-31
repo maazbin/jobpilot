@@ -15,3 +15,5 @@ A new page adds a `node` and a `branch` from the node you were on. A wrong hop c
 - [Greenhouse](greenhouse/path.md) — follow `embed`. `careers` and `public_job` are `stop`. An empty city field is `stop`.
 - [WUR](wur/path.md) — vacancy page form. Click the privacy box, then upload the CV and letter. Success is `ub-form-submitted`.
 - [Homerun](homerun/path.md) — vacancy to `/apply`. One resume with status success, then preview. Success is step 4, “Your application has been submitted.”
+- [Y Combinator](ycombinator/path.md) — public jobs to Work at a Startup. Founder details, then the company site. Success is the CV sent to a published founder address.
+- [Wellfound](wellfound/path.md) — signed-in jobs, then the company site. A city search that hides other roles is stop. Success is the CV sent to a published address.

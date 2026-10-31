@@ -16,6 +16,11 @@ export const STRATEGIES = [
   { id: 'ig-old-grid', platform: 'Instagram', when: 'The keyword grid is on screen', step: 'Treat the first posts as the newest jobs.', result: 'failed', evidence: 'That grid was weeks old. Open a post from the last day.' },
   { id: 'ig-personal', platform: 'Instagram', when: 'The inbox shows a personal chat or a promotion', step: 'Reply in that thread.', result: 'failed', evidence: 'Those threads are not an application.' },
   { id: 'li-easy', platform: 'LinkedIn', when: 'The job shows Easy Apply and the location is in scope', step: 'Submit once, then wait. A burst gets the account restricted.', result: 'worked', evidence: 'Count it only when the page says the application was sent.' },
+  { id: 'yc-founder-email', platform: 'Y Combinator', when: 'An open role offers visa or relocation in a listed place, and a founder address is published', step: 'Email that person with the CV. Do not stop at the Apply button.', result: 'worked', evidence: 'Gmail reported the message sent with the CV for a Berlin role that will sponsor.' },
+  { id: 'yc-us-office', platform: 'Y Combinator', when: 'The card says Remote and Will sponsor, and the office is in the United States', step: 'Treat that card as worldwide remote.', result: 'failed', evidence: 'The interview was an onsite day in San Francisco. The United States is not a listed place.' },
+  { id: 'wf-city-search', platform: 'Wellfound', when: 'The jobs page hides roles that do not accept one city', step: 'Treat those cards as the senior search.', result: 'failed', evidence: 'That list was part-time work and tutors.' },
+  { id: 'wf-profile-save', platform: 'Wellfound', when: 'The about form is missing the GitHub URL, the portfolio, the bio, or years', step: 'Fill those from the profile and press Save on that form.', result: 'worked', evidence: 'A reload kept the GitHub URL, the portfolio, and the bio. Years then showed 5.' },
+  { id: 'wf-skill', platform: 'Wellfound', when: 'The skill field offers suggestions', step: 'Choose the suggestion that starts with the skill name.', result: 'worked', evidence: 'Python and FastAPI showed on the skills list.' },
 ];
 
 /** Merge saved human notes onto the seed. A verdict of "wrong" blocks that step. */
