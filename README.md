@@ -2,7 +2,7 @@
 
 # JobPilot
 
-### One brain. Six doors. A hunt that learns the lock.
+### One brain. Eight doors. A hunt that learns the lock.
 
 You point a coding agent at this folder. That agent is the brain. JobPilot is the body: your browser, a memory that never asks twice, and a loop that turns a stuck page into a fix on GitHub. There is no model hiding in here.
 
@@ -10,6 +10,8 @@ You point a coding agent at this folder. That agent is the brain. JobPilot is th
 <img alt="LinkedIn" src="https://img.shields.io/badge/LinkedIn-0A66C2?style=for-the-badge&logo=linkedin&logoColor=white">
 <img alt="Indeed" src="https://img.shields.io/badge/Indeed-003A9B?style=for-the-badge&logo=indeed&logoColor=white">
 <img alt="Glassdoor" src="https://img.shields.io/badge/Glassdoor-0CAA41?style=for-the-badge&logo=glassdoor&logoColor=white">
+<img alt="Y Combinator" src="https://img.shields.io/badge/Y%20Combinator-F26522?style=for-the-badge">
+<img alt="Wellfound" src="https://img.shields.io/badge/Wellfound-111111?style=for-the-badge">
 <img alt="X" src="https://img.shields.io/badge/X-111111?style=for-the-badge&logo=x&logoColor=white">
 <img alt="Instagram" src="https://img.shields.io/badge/Instagram-E4405F?style=for-the-badge&logo=instagram&logoColor=white">
 <img alt="Gmail" src="https://img.shields.io/badge/Gmail-EA4335?style=for-the-badge&logo=gmail&logoColor=white">
@@ -17,9 +19,9 @@ You point a coding agent at this folder. That agent is the brain. JobPilot is th
 
 The first minutes are quiet on purpose. Dependencies install themselves. Leave that window open. The browser opens once, on first onboard, and you sign in on every platform above. After that, those sessions stay.
 
-**Stable release: [v3.5.0](https://github.com/maazbin/jobpilot/releases/tag/v3.5.0).** Easy Apply finishes a stuck consent step, salary answers keep the stored currency, and country and phone come from the profile.
+**Stable release: [v3.6.0](https://github.com/maazbin/jobpilot/releases/tag/v3.6.0).** Y Combinator and Wellfound are in the hunt. An open role is emailed to a published founder address. The Apply button is not the whole path.
 
-[![Stable](https://img.shields.io/badge/release-v3.5.0-22c55e.svg)](https://github.com/maazbin/jobpilot/releases/tag/v3.5.0)
+[![Stable](https://img.shields.io/badge/release-v3.6.0-22c55e.svg)](https://github.com/maazbin/jobpilot/releases/tag/v3.6.0)
 [![MIT License](https://img.shields.io/badge/license-MIT-14532d.svg)](LICENSE)
 [![MCP](https://img.shields.io/badge/protocol-MCP-2563eb.svg)](https://modelcontextprotocol.io)
 [![Node](https://img.shields.io/badge/node-%E2%89%A518-166534.svg)](https://nodejs.org)
@@ -155,6 +157,14 @@ This is the line we will keep. New work happens after this tag.
 - Commits from the evolver are authored as the GitHub username, not a personal name or a personal email.
 
 ---
+
+## v3.6.0
+
+Y Combinator jobs open on Work at a Startup once the session exists. The public jobs page still shows Sign in. Founder names are on the company card. The letter goes to a founder address published on the company site or a sponsor page, with the CV. A role stays when it is remote with no country list, or it offers visa or relocation in a place on the profile. A US office is left, even when the card says Remote and Will sponsor.
+
+Wellfound starts on the signed-in jobs page. A search that hides roles outside one city is not the senior list. The about form saves the GitHub URL, the portfolio, the bio, and years. A skill is the suggestion that starts with the skill name.
+
+The dashboard mix has a slider for Y Combinator and a slider for Wellfound. Both start at 0 until you give them a share. The path traces are [`docs/paths/ycombinator/path.md`](docs/paths/ycombinator/path.md) and [`docs/paths/wellfound/path.md`](docs/paths/wellfound/path.md). One Berlin role with visa sponsorship was emailed to the published founder address. Gmail reported the CV sent.
 
 ## v3.5.0
 
