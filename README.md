@@ -160,11 +160,11 @@ This is the line we will keep. New work happens after this tag.
 
 ## v3.6.0
 
-Y Combinator jobs open on Work at a Startup once the session exists. The public jobs page still shows Sign in. Founder names are on the company card. The letter goes to a founder address published on the company site or a sponsor page, with the CV. A role stays when it is remote with no country list, or it offers visa or relocation in a place on the profile. A US office is left, even when the card says Remote and Will sponsor.
+The signed-in Y Combinator jobs page is `ycombinator.com/jobs`. The account control is a button, and Open messages is in the header. A footer Sign In link opens the Work at a Startup application and is not the account control. Remote Software Engineer Jobs is the next list. When those cards are country lists, the companies directory is next if it already shows My profile. The letter goes to a founder address published on the YC company page, with the CV. A role stays when it is remote with no country list, or it offers visa or relocation in a place on the profile. A US office is left, even when the card says Remote and Will sponsor. A page that says the work is in person in the United States is left too.
 
 Wellfound starts on the signed-in jobs page. A search that hides roles outside one city is not the senior list. The about form saves the GitHub URL, the portfolio, the bio, and years. A skill is the suggestion that starts with the skill name.
 
-The dashboard mix has a slider for Y Combinator and a slider for Wellfound. Both start at 0 until you give them a share. The path traces are [`docs/paths/ycombinator/path.md`](docs/paths/ycombinator/path.md) and [`docs/paths/wellfound/path.md`](docs/paths/wellfound/path.md). One Berlin role with visa sponsorship was emailed to the published founder address. Gmail reported the CV sent.
+The dashboard mix has a slider for Y Combinator and a slider for Wellfound. Both start at 0 until you give them a share. The path traces are [`docs/paths/ycombinator/path.md`](docs/paths/ycombinator/path.md) and [`docs/paths/wellfound/path.md`](docs/paths/wellfound/path.md). Gmail reported the CV sent for a Berlin role that will sponsor, and for a remote AI Engineer role with no country list. Both letters used a founder address published on the page.
 
 ## v3.5.0
 
