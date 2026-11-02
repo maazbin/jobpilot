@@ -181,15 +181,41 @@ async function fillStep(frame) {
       if (prev) { t = (prev.innerText || prev.textContent || '').trim(); if (t) return t; }
       return '';
     };
-    // The question a group belongs to: nearest <fieldset>'s <legend>, else a preceding heading/
-    // question-like element, else the first option's label.
+    // The question a group belongs to. SmartApply puts the prompt in a heading/`data-testid`
+    // question node, NOT in a fieldset legend, and its option inputs often carry no `required`
+    // attribute. Walk up a few ancestors, strip the option labels + the "Choose an option to
+    // continue." hint, and keep the first remaining sentence that is really the question.
+    const optionLabels = el => {
+      const name = el.name || el.id || '';
+      if (!name) return [];
+      const esc = s => (window.CSS && CSS.escape ? CSS.escape(s) : String(s).replace(/"/g, '\\"'));
+      return [...document.querySelectorAll(`input[name="${esc(name)}"]`)]
+        .map(i => (i.labels?.[0]?.innerText || i.getAttribute('aria-label') || i.closest('label')?.innerText || '').replace(/\s+/g, ' ').trim())
+        .filter(Boolean);
+    };
+    const stripOptions = (text, opts) => {
+      let t = String(text || '').replace(/\s+/g, ' ').trim();
+      for (const o of opts) {
+        if (!o) continue;
+        const re = new RegExp(o.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'ig');
+        t = t.replace(re, ' ');
+      }
+      t = t.replace(/choose an option to continue\.?/ig, ' ').replace(/\s+/g, ' ').trim();
+      return t;
+    };
     const groupQuestion = el => {
       const fs = el.closest('fieldset');
-      if (fs) { const lg = fs.querySelector('legend'); const t = (lg?.innerText || '').trim(); if (t) return t; }
-      let node = el.closest('[role="group"], div, section') || el.parentElement;
-      for (let i = 0; node && i < 4; i++, node = node.parentElement) {
-        const h = node.querySelector && node.querySelector('legend, h1, h2, h3, h4, label, [class*="question" i], [class*="label" i]');
-        if (h) { const t = (h.innerText || h.textContent || '').trim(); if (t && t.length > 2) return t; }
+      if (fs) { const lg = fs.querySelector('legend'); const t = stripOptions(lg?.innerText || '', optionLabels(el)); if (t) return t; }
+      const opts = optionLabels(el);
+      const SEL = 'legend, h1, h2, h3, h4, h5, h6, [data-testid*="question" i], [class*="question" i], [class*="label" i], [role="heading"]';
+      let node = el.parentElement;
+      for (let i = 0; node && i < 7; i++, node = node.parentElement) {
+        for (const h of node.querySelectorAll(SEL)) {
+          const t = stripOptions(h.innerText || h.textContent || '', opts);
+          if (t.length >= 6) return t;
+        }
+        const own = stripOptions(node.innerText || node.textContent || '', opts);
+        if (own.length >= 6 && own.length <= 300) return own;
       }
       return '';
     };
@@ -203,16 +229,23 @@ async function fillStep(frame) {
         if (!name) continue;
         const g = groups[name] || (groups[name] = { name, type: el.type, question: '', options: [], required: false });
         g.options.push({ value: el.value || '', label: textOf(el) || el.value || '', checked: !!el.checked });
-        if (el.required) g.required = true;
-        if (!g.question) g.question = groupQuestion(el);
+        if (el.required || el.getAttribute('aria-required') === 'true') g.required = true;
+        if (!g.question) {
+          g.question = groupQuestion(el);
+          // SmartApply marks a required prompt with a trailing asterisk instead of `required`.
+          if (/\*/.test(g.question)) g.required = true;
+        }
         continue;
       }
       fields.push({ tag: el.tagName, type: el.type || '', name: el.name || el.id || '', label: textOf(el), required: el.required, value: el.value || '', options: el.tagName === 'SELECT' ? [...el.options].map(o => (o.text || o.value || '').trim()).filter(Boolean) : [] });
     }
-    return { fields, groups: Object.values(groups) };
-  }).catch(() => ({ fields: [], groups: [] }));
+    return { fields, groups: Object.values(groups), hint: /choose an option to continue/i.test(document.body?.innerText || '') };
+  }).catch(() => ({ fields: [], groups: [], hint: false }));
 
   const unanswered = [];
+  // When SmartApply renders "Choose an option to continue." the unanswered group IS required
+  // even though its inputs omit the HTML `required` attribute.
+  const forceRequired = !!scan.hint;
 
   // ── Radio / checkbox groups: pick a real option label, select by name+value with verified
   //    click + dispatched React events, fall back to Playwright .check(), then verify .checked.
@@ -222,7 +255,9 @@ async function fillStep(frame) {
     if (g.options.some(o => o.checked)) continue; // already answered (e.g. harvested/prefilled)
     try {
       const picked = choiceAnswer(q, g.options.map(o => o.label));
-      if (!picked) { if (g.required) { unanswered.push(q); askLater(q); } continue; }
+      const optionalMarker = /\(optional\)|\boptional\b/i.test(q);
+      const mustAnswer = g.required || (forceRequired && !optionalMarker);
+      if (!picked) { if (mustAnswer) { unanswered.push(q); askLater(q, g.options.map(o => o.label)); } continue; }
       const value = chooseRadioValue(g, picked);
 
       // (a)+(b) in-frame: find input by name+value (or by matching label text), set checked and
@@ -267,7 +302,7 @@ async function fillStep(frame) {
         const esc = s => (window.CSS && CSS.escape ? CSS.escape(s) : String(s).replace(/"/g, '\\"'));
         return [...document.querySelectorAll(`input[name="${esc(name)}"]`)].some(el => el.checked);
       }, g.name).catch(() => false);
-      if (!nowChecked && g.required) { unanswered.push(q); askLater(q); }
+      if (!nowChecked && mustAnswer) { unanswered.push(q); askLater(q, g.options.map(o => o.label)); }
     } catch {}
   }
 

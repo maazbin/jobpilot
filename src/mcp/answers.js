@@ -406,7 +406,9 @@ export function resolveYesNo(question, { yesLabel, noLabel, workAuth = {}, count
   }
 
   // Legal-screening negatives: convicted/criminal/non-compete/related/currently-employed → No.
-  if (/convicted|criminal|felony|non-?compete|related to anyone|previously (worked|employed)|currently employed by|been employed by/.test(q)) {
+  // "friends or relatives working here" and "family members at this company" are the same
+  // nepotism screen; the truthful default is No unless the user taught a different answer.
+  if (/convicted|criminal|felony|non-?compete|related to anyone|friend|relativ|family member|previously (worked|employed)|currently employed by|been employed by/.test(q)) {
     return noLabel;
   }
 
