@@ -422,8 +422,9 @@ export async function humanAssistedApply(args) {
   let pageRef = { page: null };
   const r = await _humanAssistedApply(args, pageRef);
   // Close the SmartApply tab on terminal outcomes to prevent tab leaks (72+ tabs choke Chrome).
-  // Keep it open ONLY when we need the user to act and then resume on the same tab.
-  if (r.result !== 'waiting_for_human' && r.result !== 'needs_answers') {
+  // Keep it open ONLY when we need the user to act and then resume on the same tab, or when the
+  // caller asked to keep it for inspection after an error.
+  if (r.result !== 'waiting_for_human' && r.result !== 'needs_answers' && !args?.keepOpen) {
     try { await pageRef.page?.close(); } catch {}
   }
   return r;
@@ -513,17 +514,33 @@ async function _humanAssistedApply({ jobUrl, resume = false }, pageRef) {
       return { ok: false, result: 'needs_answers', detail: 'needs your answer: ' + unanswered.slice(0, 4).join(' | ').slice(0, 300), questions: unanswered, url: page.url() };
     }
 
-    // Stall guard: if we have revisited this exact module 3 times with no progress and no
+    // Stall guard: if we have revisited this exact module several times with no progress and no
     // unanswered required question, the primary control is dead/placeholder (e.g. SmartApply's
     // off-screen hp-continue-button-N) — stop and record the encounter for self-evolution rather
-    // than returning a vague 10-step timeout.
-    if (sameModuleClicks >= 2) {
+    // than returning a vague 10-step timeout. The threshold is checked AFTER the post-click wait
+    // below, because SmartApply modules routinely take 3-6s to redirect.
+    if (sameModuleClicks >= 3) {
       await encounter('smartapply_stall', 'advance did not change module: ' + moduleUrl.replace(/^https?:\/\/[^/]+/, ''), { url: page.url(), page }).catch(() => {});
       return { ok: false, result: 'error', detail: 'SmartApply did not advance past ' + (moduleUrl.split('/form/')[1] || moduleUrl) + ' after repeated Continue clicks (likely a dead/placeholder control)', url: page.url() };
     }
 
     const advanced = await clickAdvance(frame);
     prevModuleUrl = moduleUrl;
+    if (advanced) {
+      // SmartApply redirects after the click are slow (3-6s). Poll for a module change or a
+      // confirmation so a slow module is not misread as a dead control.
+      const deadline = Date.now() + 9000;
+      while (Date.now() < deadline) {
+        await SLEEP(500);
+        if (await confirmed(page)) return { ok: true, result: 'submitted', detail: 'Application submitted + confirmed', url: page.url() };
+        let now = '';
+        try { now = ((await contentFrame(page)).url() || page.url()).split('?')[0]; } catch { now = page.url().split('?')[0]; }
+        if (now !== moduleUrl) break;
+      }
+      let now = '';
+      try { now = ((await contentFrame(page)).url() || page.url()).split('?')[0]; } catch { now = page.url().split('?')[0]; }
+      if (now === moduleUrl) sameModuleClicks++;
+    }
     if (!advanced) {
       // No ENABLED primary and no confirmation — either done, or the Continue button is present
       // but disabled pending answers. Give the page a beat, then disambiguate.
