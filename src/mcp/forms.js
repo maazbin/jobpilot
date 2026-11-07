@@ -502,9 +502,18 @@ async function fillAll(page, unknown, job = {}) {
       if (f.role === 'combobox' || /select/i.test(f.q) && f.tag === 'INPUT' && f.type === 'text' && await loc.getAttribute('aria-autocomplete').catch(() => null)) {
         // react-select: open, read options, pick
         await loc.click().catch(() => {}); await SLEEP(600);
-        const opts = await page.locator('[role="option"]').allInnerTexts().catch(() => []);
         if (PLACE_Q.test(f.q)) {
-          const place = opts.map(o => listedPlaceOption(f.q, o, p)).find(Boolean);
+          // Greenhouse Location (City) typeaheads stay empty until you type a city/country.
+          const seed = String(p.location || p.country || '').split(',')[0].trim();
+          if (seed) {
+            await loc.fill('').catch(() => {});
+            await loc.type(seed, { delay: 40 }).catch(() => {});
+            await SLEEP(1200);
+          }
+          const opts = await page.locator('[role="option"]').allInnerTexts().catch(() => []);
+          const place = opts.map(o => listedPlaceOption(f.q, o, p)).find(Boolean)
+            || opts.find(o => seed && o.toLowerCase().includes(seed.toLowerCase()))
+            || opts[0];
           if (!place) { if (f.required) unknown.add(f.q); await page.keyboard.press('Escape').catch(() => {}); continue; }
           const opt = page.locator('[role="option"]').filter({ hasText: place }).first();
           if (await opt.isVisible().catch(() => false)) await opt.click().catch(() => {});
@@ -512,6 +521,7 @@ async function fillAll(page, unknown, job = {}) {
           await page.keyboard.press('Escape').catch(() => {});
           continue;
         }
+        const opts = await page.locator('[role="option"]').allInnerTexts().catch(() => []);
         let pick = opts.length ? choiceAnswer(f.q, opts) : textAnswer(f.q);
         if (!opts.length && pick) { await loc.fill(pick); await SLEEP(1200); }
         const key = pick ? pick.split(/[\s+(]/).filter(Boolean)[0].replace(/[.*+?^${}()|[\]\\]/g, '\\$&') : '';
