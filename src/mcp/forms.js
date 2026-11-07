@@ -623,7 +623,8 @@ async function clickAshbyYesNo(page) {
     if (await box.isChecked().catch(() => false)) continue;
     const q = ((await entry.locator('.ashby-application-form-question-title, label').first().innerText().catch(() => '')) || '').slice(0, 200);
     const opts = (await entry.locator('.ashby-application-form-input-yesno-option').allInnerTexts().catch(() => [])).map(t => t.trim()).filter(Boolean);
-    const pick = choiceAnswer(q, opts.length ? opts : ['Yes', 'No']) || (/over the age of\s*18|at least\s*18/i.test(q) ? 'Yes' : null);
+    const pick = choiceAnswer(q, opts.length ? opts : ['Yes', 'No'])
+      || (/over the age of\s*18|at least\s*18|office\s*\d+\s*days|hybrid model|comfortable with this arrangement/i.test(q) ? 'Yes' : null);
     if (!pick) continue;
     const btn = entry.locator('.ashby-application-form-input-yesno-option').filter({ hasText: new RegExp(`^\\s*${pick.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') }).first();
     if (await btn.isVisible().catch(() => false)) {
