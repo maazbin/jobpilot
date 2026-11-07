@@ -510,14 +510,22 @@ async function fillAll(page, unknown, job = {}) {
             await loc.type(seed, { delay: 40 }).catch(() => {});
             await SLEEP(1200);
           }
-          const opts = await page.locator('[role="option"]').allInnerTexts().catch(() => []);
+          const opts = (await page.locator('[role="option"]').allInnerTexts().catch(() => [])).map(t => t.trim()).filter(Boolean);
           const place = opts.map(o => listedPlaceOption(f.q, o, p)).find(Boolean)
             || opts.find(o => seed && o.toLowerCase().includes(seed.toLowerCase()))
             || opts[0];
-          if (!place) { if (f.required) unknown.add(f.q); await page.keyboard.press('Escape').catch(() => {}); continue; }
-          const opt = page.locator('[role="option"]').filter({ hasText: place }).first();
-          if (await opt.isVisible().catch(() => false)) await opt.click().catch(() => {});
-          else if (f.required) unknown.add(f.q);
+          if (place) {
+            const opt = page.locator('[role="option"]').filter({ hasText: place }).first();
+            if (await opt.isVisible().catch(() => false)) await opt.click().catch(() => {});
+            else if (f.required) unknown.add(f.q);
+          } else if (seed) {
+            // Some Greenhouse location typeaheads never list options for non-US cities —
+            // commit the typed seed with Enter so the required field is not left blank.
+            await loc.press('Enter').catch(() => {});
+            await SLEEP(400);
+          } else if (f.required) {
+            unknown.add(f.q);
+          }
           await page.keyboard.press('Escape').catch(() => {});
           continue;
         }
