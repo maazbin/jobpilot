@@ -545,14 +545,74 @@ async function fillAll(page, unknown, job = {}) {
     if (PLACE_Q.test(g[0].q)) {
       const r = g.find(x => listedPlaceOption(g[0].q, x.optLabel, p));
       if (!r) { unknown.add(g[0].q); continue; }
-      await page.locator(`[data-jf="${r.id}"]`).check({ force: true }).catch(() => {});
+      await clickRadio(page, r);
       continue;
     }
     const pick = choiceAnswer(g[0].q, g.map(r => r.optLabel));
     const r = g.find(x => x.optLabel === pick) || g[0];
-    await page.locator(`[data-jf="${r.id}"]`).check({ force: true }).catch(() => {});
+    await clickRadio(page, r);
   }
+
+  // Ashby (and some other ATS) render Yes/No as role=radio buttons without a native
+  // <input type=radio>, so SCAN misses them. Click any still-unanswered age/consent gate
+  // by its visible label so submit validation does not bounce with "Missing entry".
+  await clickRoleRadios(page);
+  await clickAshbyYesNo(page);
   return fields.length;
+}
+
+/** Prefer a real user-gesture click on the label/control so React-controlled radios update. */
+async function clickRadio(page, r) {
+  const input = page.locator(`[data-jf="${r.id}"]`);
+  const wrapped = page.locator(`label:has([data-jf="${r.id}"])`).first();
+  if (await wrapped.isVisible().catch(() => false)) {
+    await wrapped.click({ timeout: 2000 }).catch(() => {});
+  } else if (r.optLabel) {
+    const byText = page.getByRole('radio', { name: r.optLabel }).first();
+    if (await byText.isVisible().catch(() => false)) await byText.click({ timeout: 2000 }).catch(() => {});
+  }
+  await input.check({ force: true }).catch(() => {});
+  await input.click({ force: true }).catch(() => {});
+}
+
+async function clickRoleRadios(page) {
+  const groups = page.locator('[role="radiogroup"], fieldset:has([role="radio"])');
+  const n = await groups.count().catch(() => 0);
+  for (let i = 0; i < n; i++) {
+    const g = groups.nth(i);
+    const checked = g.locator('[role="radio"][aria-checked="true"]');
+    if (await checked.count().catch(() => 0)) continue;
+    const q = ((await g.locator('legend, [class*="label"], p, span').first().innerText().catch(() => ''))
+      || (await g.getAttribute('aria-label').catch(() => '')) || '').slice(0, 200);
+    const opts = await g.locator('[role="radio"]').allInnerTexts().catch(() => []);
+    const pick = choiceAnswer(q, opts.map(t => t.trim()).filter(Boolean));
+    if (!pick) continue;
+    const opt = g.locator('[role="radio"]').filter({ hasText: new RegExp(`^\\s*${pick.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, 'i') }).first();
+    if (await opt.isVisible().catch(() => false)) await opt.click({ timeout: 2000 }).catch(() => {});
+  }
+}
+
+/** Ashby Yes/No widgets are <button class="ashby-application-form-input-yesno-option">, not radios. */
+async function clickAshbyYesNo(page) {
+  const entries = page.locator('.ashby-application-form-field-entry:has(.ashby-application-form-input-yesno-option)');
+  const n = await entries.count().catch(() => 0);
+  for (let i = 0; i < n; i++) {
+    const entry = entries.nth(i);
+    const selected = entry.locator('.ashby-application-form-input-yesno-option[aria-pressed="true"], .ashby-application-form-input-yesno-option[class*="selected"], .ashby-application-form-input-yesno-option[class*="active"]');
+    if (await selected.count().catch(() => 0)) continue;
+    // Already toggled if the hidden checkbox is checked.
+    const box = entry.locator('input[type="checkbox"]');
+    if (await box.isChecked().catch(() => false)) continue;
+    const q = ((await entry.locator('.ashby-application-form-question-title, label').first().innerText().catch(() => '')) || '').slice(0, 200);
+    const opts = (await entry.locator('.ashby-application-form-input-yesno-option').allInnerTexts().catch(() => [])).map(t => t.trim()).filter(Boolean);
+    const pick = choiceAnswer(q, opts.length ? opts : ['Yes', 'No']) || (/over the age of\s*18|at least\s*18/i.test(q) ? 'Yes' : null);
+    if (!pick) continue;
+    const btn = entry.locator('.ashby-application-form-input-yesno-option').filter({ hasText: new RegExp(`^\\s*${pick.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') }).first();
+    if (await btn.isVisible().catch(() => false)) {
+      await btn.click({ timeout: 2000 }).catch(() => {});
+      await SLEEP(200);
+    }
+  }
 }
 
 export async function applyForm({ url, timeoutMs = 120000, submit = true, job = {} }) {
@@ -620,6 +680,14 @@ export async function applyForm({ url, timeoutMs = 120000, submit = true, job = 
 
     if (/linkedin\.com\/(login|authwall)/.test(page.url())) { await encounter('form', 'redirected to linkedin login/authwall', { url: page.url(), page }); return { ok: false, result: 'needs_manual', detail: 'redirected to ' + page.url().slice(0, 80), finalUrl }; }
     if (/workday|myworkdayjobs|icims|taleo|successfactors|oraclecloud|brassring/.test(finalUrl)) return { ok: false, result: 'needs_manual', detail: 'account-gated ATS (Workday/iCIMS/Taleo) — one-click for you', finalUrl };
+
+    // Closed / removed Ashby (and similar) postings render a shell with "Job not found"
+    // and no inputs. Treat as closed — do not record a false "no form" encounter.
+    const pageText = await page.evaluate(() => (document.body?.innerText || '').slice(0, 1200)).catch(() => '');
+    if (/job not found|this (job|position|role) (is no longer available|has been (filled|closed|removed)|was not found)|no longer accepting applications|position has been filled/i.test(pageText)) {
+      flog('closed posting on', hostOf(finalUrl));
+      return { ok: true, result: 'closed', detail: 'job posting no longer available', finalUrl };
+    }
 
     let n = await fillAll(page, unknown, job);
     if (n < 2) {
