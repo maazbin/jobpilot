@@ -381,6 +381,14 @@ export function resolveYesNo(question, { yesLabel, noLabel, workAuth = {}, count
   // Age gates on ATS forms (Ashby et al.) — adult applicants are over 18.
   if (/over the age of\s*18|at least\s*18|18\s*years?\s*(of age|old)|aged?\s*18\+|legal(?:ly)?\s*adult/.test(q)) return yesLabel;
 
+  // Hybrid/office "already based here?" gates — only Yes when the profile place is
+  // named in the question. Willingness to relocate is not the same as already local.
+  if (/based in (this|the listed)|work (from|in) (the )?office|in person \d|hybrid (work )?model|listed location/.test(q)) {
+    const place = String(userCountry || '').toLowerCase();
+    if (place && q.includes(place)) return yesLabel;
+    return noLabel;
+  }
+
   if (/\bcitizen\b|citizenship|reside in|resident of|residing in|do you live in|located in|based in|federal contractor/.test(q)) {
     if (!named || !userCountry) return null;
     const matchesUser = named.includes(userCountry) || userCountry.includes(named)

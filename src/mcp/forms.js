@@ -567,7 +567,11 @@ async function fillAll(page, unknown, job = {}) {
       continue;
     }
     const pick = choiceAnswer(g[0].q, g.map(r => r.optLabel));
-    const r = g.find(x => x.optLabel === pick) || g[0];
+    const r = g.find(x => x.optLabel === pick)
+      || g.find(x => pick && x.optLabel && (x.optLabel.startsWith(String(pick).slice(0, 40)) || String(pick).startsWith(x.optLabel.slice(0, 40))))
+      || (pick && /^no\b/i.test(pick) ? g.find(x => /^no\b/i.test(x.optLabel || '')) : null)
+      || (pick && /^yes\b/i.test(pick) ? g.find(x => /^yes\b/i.test(x.optLabel || '')) : null)
+      || g[0];
     await clickRadio(page, r);
   }
 
