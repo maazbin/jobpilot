@@ -149,8 +149,58 @@ function absorbNewerAnswers() {
          ON CONFLICT(qkey) DO UPDATE SET ${ANSWER_FIELDS.filter(f => f !== 'qkey').map(f => `${f}=excluded.${f}`).join(', ')}`,
         vals);
     }
+    // Outreach rows must survive too — otherwise a worker scrape save() after an MCP
+    // send_email wipes emails_sent and alreadyEmailed() starts lying.
+    absorbDiskEmails(disk);
+    absorbDiskJobStatuses(disk);
   } catch { /* disk copy unreadable — keep this process's answers */ }
   finally { try { disk?.close(); } catch {} }
+}
+
+function emailKey(row) {
+  return [
+    String(row.to_email || '').toLowerCase(),
+    String(row.company || '').toLowerCase(),
+    String(row.role || '').toLowerCase(),
+    String(row.subject || ''),
+    String(row.result || ''),
+    String(row.job_url || ''),
+  ].join('\0');
+}
+
+function absorbDiskEmails(disk) {
+  try {
+    const have = new Set(readRows(db, 'SELECT to_email,company,role,subject,result,job_url FROM emails_sent').map(emailKey));
+    for (const row of readRows(disk, 'SELECT to_email,company,role,subject,result,job_url,ts FROM emails_sent')) {
+      if (have.has(emailKey(row))) continue;
+      db.run(
+        `INSERT INTO emails_sent (to_email,company,role,subject,result,job_url,ts) VALUES (?,?,?,?,?,?,?)`,
+        [row.to_email || '', row.company || '', row.role || '', row.subject || '', row.result || '', row.job_url || '', row.ts || null],
+      );
+      have.add(emailKey(row));
+    }
+  } catch { /* table may differ across older DB copies */ }
+}
+
+const STATUS_RANK = {
+  new: 0, needs_manual: 1, failed: 1, draft: 2,
+  connected: 3, dm_sent: 3, emailed: 4, applied: 5,
+  skipped: 3, skipped_duplicate: 3, fake: 4,
+};
+
+function absorbDiskJobStatuses(disk) {
+  try {
+    for (const row of readRows(disk, `SELECT url, status, notes, applied_at FROM jobs WHERE status IS NOT NULL AND status != ''`)) {
+      if (!row.url) continue;
+      const cur = one('SELECT status, notes, applied_at FROM jobs WHERE url=?', [row.url]);
+      if (!cur) continue;
+      const diskRank = STATUS_RANK[row.status] ?? 0;
+      const memRank = STATUS_RANK[cur.status] ?? 0;
+      if (diskRank <= memRank) continue;
+      db.run('UPDATE jobs SET status=?, notes=COALESCE(NULLIF(?, ""), notes), applied_at=COALESCE(NULLIF(?, ""), applied_at) WHERE url=?',
+        [row.status, row.notes || '', row.applied_at || '', row.url]);
+    }
+  } catch { /* ignore */ }
 }
 
 export function save() {
