@@ -506,8 +506,13 @@ async function fillAll(page, unknown, job = {}) {
           // Greenhouse Location (City) typeaheads stay empty until you type a city/country.
           // intl-tel-input also uses role=option for dial codes — Escape + scope to the
           // react-select menu so we do not pick "Afghanistan+93" as a city.
+          // Country questions (e.g. Careem "located? (Country)*") must seed with country,
+          // not the city half of "Karachi, Pakistan".
           await closeBlockingOverlays(page);
-          const seed = String(p.location || p.country || '').split(',')[0].trim();
+          const isCountryQ = /country|nationalit/i.test(f.q);
+          const seed = isCountryQ
+            ? String(p.country || (p.location || '').split(',').pop() || '').trim()
+            : String(p.location || p.country || '').split(',')[0].trim();
           await loc.click().catch(() => {});
           await SLEEP(300);
           if (seed) {
@@ -538,7 +543,20 @@ async function fillAll(page, unknown, job = {}) {
         }
         const opts = await page.locator('[role="option"]').allInnerTexts().catch(() => []);
         let pick = opts.length ? choiceAnswer(f.q, opts) : textAnswer(f.q);
-        if (!opts.length && pick) { await loc.fill(pick); await SLEEP(1200); }
+        // University / school typeaheads often need a typed seed before options appear
+        // (Careem "Which University are you graduating from?*").
+        if (!opts.length && /university|college|school|graduating|alma mater/i.test(f.q)) {
+          pick = pick || textAnswer(f.q);
+          if (pick) {
+            await loc.fill('').catch(() => {});
+            await loc.type(String(pick), { delay: 35 }).catch(() => {});
+            await SLEEP(1200);
+          }
+        } else if (!opts.length && pick) {
+          await loc.fill(pick); await SLEEP(1200);
+        }
+        const refreshed = opts.length ? opts : (await page.locator('[role="option"]').allInnerTexts().catch(() => []));
+        if (!pick && refreshed.length) pick = choiceAnswer(f.q, refreshed) || refreshed[0];
         const key = pick ? pick.split(/[\s+(]/).filter(Boolean)[0].replace(/[.*+?^${}()|[\]\\]/g, '\\$&') : '';
         const opt = key ? page.locator('[role="option"]').filter({ hasText: new RegExp('^\\s*' + key, 'i') }).first() : null;
         if (opt && await opt.isVisible().catch(() => false)) await opt.click().catch(() => {});

@@ -265,10 +265,14 @@ export function textAnswer(question, { numeric = false } = {}) {
     derived = L.github || null; basis = 'github from profile';
   } else if (/portfolio|personal site|website|\burl\b/.test(q)) {
     derived = L.portfolio || L.website || L.github || null; basis = 'portfolio/links from profile';
-  } else if (/\bcity\b|location|where.*(based|located)|address|country of residence/.test(q)) {
-    derived = p.location || null; basis = 'location from profile';
-  } else if (/country/.test(q)) {
+  } else if (/\(country\)|country of residence|which country|current country|\bcountry\b/.test(q) && !/\bcity\b/.test(q)) {
+    // Careem et al. ask "Where are you currently located? (Country)*" — must be country, not city.
     derived = p.country || (p.location || '').split(',').pop().trim() || null; basis = 'country from profile';
+  } else if (/\bcity\b|location|where.*(based|located)|address/.test(q)) {
+    derived = p.location || null; basis = 'location from profile';
+  } else if (/university|college|school.*(name|attend)|graduating from|alma mater/.test(q)) {
+    derived = ans(p, 'university', p.university || p.school || (p.education ? `Graduated (${p.education})` : null));
+    basis = 'university/education from profile';
   } else if (/notice period|how soon|start date|when can you start|availability to start/.test(q)) {
     const daysOnly = /notice period[^?]*\bdays?\b/.test(q);
     derived = numeric || daysOnly
