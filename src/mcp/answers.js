@@ -378,6 +378,9 @@ export function resolveYesNo(question, { yesLabel, noLabel, workAuth = {}, count
 
   if (/disabilit|reasonable adjustments?|require (any )?(adjustments|accommodations)/.test(q)) return noLabel;
 
+  // Age gates on ATS forms (Ashby et al.) — adult applicants are over 18.
+  if (/over the age of\s*18|at least\s*18|18\s*years?\s*(of age|old)|aged?\s*18\+|legal(?:ly)?\s*adult/.test(q)) return yesLabel;
+
   if (/\bcitizen\b|citizenship|reside in|resident of|residing in|do you live in|located in|based in|federal contractor/.test(q)) {
     if (!named || !userCountry) return null;
     const matchesUser = named.includes(userCountry) || userCountry.includes(named)
