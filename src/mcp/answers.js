@@ -455,6 +455,16 @@ export function choiceAnswer(question, options) {
   let derived = null;
   let basis = '';
 
+  // Greenhouse/Ashby consent comboboxes often list "I Accept" / "I Agree" among
+  // unrelated options (or after a long country list). Prefer that label.
+  if (isConsentQuestion(question)) {
+    const accept = find(/^i (accept|agree|consent)\b/) || find(/\b(accept|agree|consent)\b/);
+    if (accept) {
+      recordAgentAnswer(question, accept, 'consent option on ATS form');
+      return accept;
+    }
+  }
+
   if (yes && no) {
     const yn = resolveYesNo(question, {
       yesLabel: yes, noLabel: no, workAuth: wa,
