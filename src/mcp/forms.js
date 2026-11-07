@@ -504,18 +504,25 @@ async function fillAll(page, unknown, job = {}) {
         await loc.click().catch(() => {}); await SLEEP(600);
         if (PLACE_Q.test(f.q)) {
           // Greenhouse Location (City) typeaheads stay empty until you type a city/country.
+          // intl-tel-input also uses role=option for dial codes — Escape + scope to the
+          // react-select menu so we do not pick "Afghanistan+93" as a city.
+          await closeBlockingOverlays(page);
           const seed = String(p.location || p.country || '').split(',')[0].trim();
+          await loc.click().catch(() => {});
+          await SLEEP(300);
           if (seed) {
             await loc.fill('').catch(() => {});
             await loc.type(seed, { delay: 40 }).catch(() => {});
-            await SLEEP(1200);
+            await SLEEP(1400);
           }
-          const opts = (await page.locator('[role="option"]').allInnerTexts().catch(() => [])).map(t => t.trim()).filter(Boolean);
+          const menuOpts = page.locator('.select__menu [role="option"], [class*="select__menu"] [role="option"], [id*="candidate-location"] [role="option"]');
+          const opts = (await menuOpts.allInnerTexts().catch(() => [])).map(t => t.trim()).filter(Boolean)
+            .filter(t => !/\+\d{1,4}$/.test(t)); // drop phone dial-code rows if any leaked in
           const place = opts.map(o => listedPlaceOption(f.q, o, p)).find(Boolean)
             || opts.find(o => seed && o.toLowerCase().includes(seed.toLowerCase()))
             || opts[0];
           if (place) {
-            const opt = page.locator('[role="option"]').filter({ hasText: place }).first();
+            const opt = menuOpts.filter({ hasText: place }).first();
             if (await opt.isVisible().catch(() => false)) await opt.click().catch(() => {});
             else if (f.required) unknown.add(f.q);
           } else if (seed) {
