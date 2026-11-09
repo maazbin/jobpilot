@@ -48,17 +48,37 @@ export function buildQueries({ limit = 30 } = {}) {
   return queriesFromProfile(getProfile(), { limit });
 }
 
-/** Queries for LinkedIn JOB LISTINGS (jobs/search), roles + skills + freelance. */
-export function listingQueriesFromProfile(p, { limit = 18 } = {}) {
+/** Queries for LinkedIn JOB LISTINGS (jobs/search), roles + skills + freelance.
+ *  New strategy: skill-based + location-specific + remote variants for more coverage.
+ */
+export function listingQueriesFromProfile(p, { limit = 30 } = {}) {
   const roles = selectedRoles(p);
   if (!roles.length) return [];
   const remote = p.preferences?.remoteOnly ? ' remote' : '';
   const prefLocs = (p.preferences?.locations || []).map(s => String(s).trim()).filter(Boolean).slice(0, 6);
+  const country = String(p.country || '').trim();
+  const isCountryScope = p.preferences?.locationScope === 'country' && country;
   const wantsRelo = p.workAuth?.willingToRelocate === true && prefLocs.length > 0;
+
+  // Extract key skills to build skill-paired queries
+  const skills = (p.skills || p.preferences?.keywords || [])
+    .map(s => String(s).trim().toLowerCase())
+    .filter(s => s.length > 2 && !/aws|ec2|s3|sqs|sns|ses|ecs|lambda/.test(s)) // skip pure infra
+    .slice(0, 6);
+
   const out = new Set();
   for (const r of roles) {
     out.add(`${r}${remote}`);
-    if (wantsRelo) { for (const loc of prefLocs) out.add(`${r} ${loc}`); out.add(`${r} visa sponsorship`); }
+    // Skill-paired variants (e.g. "React developer", "Next.js developer")
+    for (const sk of skills.slice(0, 3)) out.add(`${sk} developer`);
+    // Location-specific
+    if (isCountryScope) out.add(`${r} ${country}${remote}`);
+    if (wantsRelo) {
+      for (const loc of prefLocs.slice(0, 3)) out.add(`${r} ${loc}`);
+      out.add(`${r} visa sponsorship`);
+    }
+    // Remote variants
+    out.add(`${r} remote`);
   }
   return [...out].slice(0, limit);
 }
