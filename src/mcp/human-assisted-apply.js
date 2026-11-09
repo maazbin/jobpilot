@@ -309,6 +309,21 @@ async function clickAdvance(frame) {
   // SmartApply addresses the button by data-testid (e.g. continue-button, form-action-continue)
   // and often puts the visible label on a nested <span>, so match by testid OR own/nested-span
   // text. NEVER match or click the reCAPTCHA control.
+  for (const tid of ['submit-application-button', 'form-action-continue', 'continue-button', 'submit-button']) {
+    try {
+      const byTid = frame.getByTestId(tid).first();
+      if (await byTid.count().catch(() => 0)) { await byTid.click({ timeout: 2500 }); return tid; }
+    } catch {}
+  }
+  try {
+    const byRole = frame.getByRole('button', { name: /submit your application|submit application|continue|review your application|review|next/i }).first();
+    if (await byRole.count().catch(() => 0)) {
+      const txt = (await byRole.innerText().catch(() => '')).trim();
+      await byRole.click({ timeout: 2500 });
+      return txt || 'advance';
+    }
+  } catch {}
+
   const inPage = await frame.evaluate(() => {
     const SUBMIT = /submit your application|submit application|^submit$/i;
     const CONT = /continue|review your application|^review$|^next$/i;
