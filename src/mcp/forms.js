@@ -36,6 +36,22 @@ async function closeBlockingOverlays(page) {
 }
 const CONFIRM_RE = /thank(s| you) for (applying|your application)|application (has been |was )?(received|submitted|sent)|we.?ve received your application|successfully (applied|submitted)|your application is (complete|submitted|received)|application submitted|applied successfully|you('ve| have) applied|congrat|we will be in touch|we.?ll be in touch|check your email.*application/i;
 
+const PLACE_Q = /country|nationalit|location|\bcity\b|where.*(based|located|work|live|reside)/i;
+
+/** A country list is alphabetical, so the first row is Afghanistan. Only a row that
+ *  names this profile's country or city may be chosen. '' means do not click. */
+export function listedPlaceOption(question, optionText, profile = {}) {
+  if (!PLACE_Q.test(String(question || ''))) return null;
+  const text = String(optionText || '').replace(/\s+/g, ' ').trim();
+  const q = String(question || '').toLowerCase();
+  const country = String(profile.country || '').trim().toLowerCase();
+  const city = String(profile.location || '').split(',')[0].trim().toLowerCase();
+  const lo = text.toLowerCase();
+  if (/country|nationalit/.test(q)) return country && lo.includes(country) ? text : '';
+  if ((city && lo.includes(city)) || (country && lo.includes(country))) return text;
+  return '';
+}
+
 const SCAN = () => {
   const vis = el => { const r = el.getBoundingClientRect(); const s = getComputedStyle(el); return (r.width > 0 || r.height > 0 || el.type === 'file' || el.type === 'radio' || el.type === 'checkbox') && s.visibility !== 'hidden'; };
   const qOf = el => {
@@ -132,29 +148,26 @@ async function resolveIndeed(page) {
   if (!found) return null;
   if (found.direct) return found.direct;
 
-  // Follow the Indeed redirect link within the authenticated session and capture where it finally
-  // lands. If it leaves indeed.com, that destination is the real ATS; hand it back to applyForm().
-  // If it stays on indeed.com (in-site Indeed Apply), there is no external ATS to drive — return
-  // null so the caller routes to connect/email.
+  // Follow the Indeed redirect link within the authenticated session and capture where
+  // it finally lands. If it leaves indeed.com, that destination is the real ATS; hand it
+  // back to applyForm(). If it stays on indeed.com (in-site Indeed Apply), we have no
+  // external ATS to drive — signal that so the caller routes to connect/email.
   if (found.redirect) {
     try {
       await page.goto(found.redirect, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
-      // /applystart does a MULTI-HOP redirect (indeed → tracker → employer ATS). Reading the URL
-      // once can catch it mid-hop (still on indeed.com) or on a brief bounce back. Poll until the
-      // URL stabilizes: accept the first off-indeed.com host that stays put for two reads, and give
-      // up if it is still on indeed.com after the window (in-platform apply, not an external ATS).
+      // /applystart hops indeed → tracker → employer ATS. One read often catches the middle hop.
       let dest = page.url();
       let stableOff = '';
       for (let i = 0; i < 8; i++) {
         await SLEEP(1500);
         const now = page.url();
-        if (now && !/indeed\.com/.test(now) && !/smartapply\.indeed\.com/.test(now)) {
-          if (now === dest) { stableOff = now; break; }  // settled off-indeed
+        if (now && !/indeed\.com/i.test(now)) {
+          if (now === dest) { stableOff = now; break; }
         }
         dest = now;
       }
       if (stableOff) return stableOff;
-      if (dest && !/indeed\.com/.test(dest)) return dest;  // off-indeed on last read even if not 2x-stable
+      if (dest && !/indeed\.com/i.test(dest)) return dest;
     } catch { /* fall through */ }
   }
   return null;
@@ -190,7 +203,7 @@ async function resolveGlassdoor(page) {
     const dest = popup.url();
     await popup.close().catch(() => {});
     if (dest && !/glassdoor\.com/.test(dest) && !/smartapply\.indeed\.com/.test(dest)) return dest;
-    if (/smartapply\.indeed\.com/.test(dest)) return null;   // bounced to reCAPTCHA path
+    if (/smartapply\.indeed\.com/.test(dest)) return null;   // Indeed Apply now — not this click
   }
 
   // Glassdoor navigates in the same tab sometimes.
@@ -474,6 +487,13 @@ async function fillAll(page, unknown, job = {}) {
         continue;
       }
       if (f.tag === 'SELECT') {
+        if (PLACE_Q.test(f.q)) {
+          const place = (f.opts || []).map(o => listedPlaceOption(f.q, o, p)).find(Boolean);
+          if (f.val && listedPlaceOption(f.q, f.val, p)) continue;
+          if (!place) { if (f.required || f.val) unknown.add(f.q); continue; }
+          await loc.selectOption({ label: place }).catch(() => {});
+          continue;
+        }
         if (f.val) continue;
         const pick = choiceAnswer(f.q, f.opts.slice(1)) ; if (pick) await loc.selectOption({ label: pick }).catch(() => {}); else if (f.required) unknown.add(f.q);
         continue;
@@ -482,13 +502,65 @@ async function fillAll(page, unknown, job = {}) {
       if (f.role === 'combobox' || /select/i.test(f.q) && f.tag === 'INPUT' && f.type === 'text' && await loc.getAttribute('aria-autocomplete').catch(() => null)) {
         // react-select: open, read options, pick
         await loc.click().catch(() => {}); await SLEEP(600);
+        if (PLACE_Q.test(f.q)) {
+          // Greenhouse Location (City) typeaheads stay empty until you type a city/country.
+          // intl-tel-input also uses role=option for dial codes — Escape + scope to the
+          // react-select menu so we do not pick "Afghanistan+93" as a city.
+          // Country questions (e.g. Careem "located? (Country)*") must seed with country,
+          // not the city half of "Karachi, Pakistan".
+          await closeBlockingOverlays(page);
+          const isCountryQ = /country|nationalit/i.test(f.q);
+          const seed = isCountryQ
+            ? String(p.country || (p.location || '').split(',').pop() || '').trim()
+            : String(p.location || p.country || '').split(',')[0].trim();
+          await loc.click().catch(() => {});
+          await SLEEP(300);
+          if (seed) {
+            await loc.fill('').catch(() => {});
+            await loc.type(seed, { delay: 40 }).catch(() => {});
+            await SLEEP(1400);
+          }
+          const menuOpts = page.locator('.select__menu [role="option"], [class*="select__menu"] [role="option"], [id*="candidate-location"] [role="option"]');
+          const opts = (await menuOpts.allInnerTexts().catch(() => [])).map(t => t.trim()).filter(Boolean)
+            .filter(t => !/\+\d{1,4}$/.test(t)); // drop phone dial-code rows if any leaked in
+          const place = opts.map(o => listedPlaceOption(f.q, o, p)).find(Boolean)
+            || opts.find(o => seed && o.toLowerCase().includes(seed.toLowerCase()))
+            || opts[0];
+          if (place) {
+            const opt = menuOpts.filter({ hasText: place }).first();
+            if (await opt.isVisible().catch(() => false)) await opt.click().catch(() => {});
+            else if (f.required) unknown.add(f.q);
+          } else if (seed) {
+            // Some Greenhouse location typeaheads never list options for non-US cities —
+            // commit the typed seed with Enter so the required field is not left blank.
+            await loc.press('Enter').catch(() => {});
+            await SLEEP(400);
+          } else if (f.required) {
+            unknown.add(f.q);
+          }
+          await page.keyboard.press('Escape').catch(() => {});
+          continue;
+        }
         const opts = await page.locator('[role="option"]').allInnerTexts().catch(() => []);
         let pick = opts.length ? choiceAnswer(f.q, opts) : textAnswer(f.q);
-        if (!opts.length && pick) { await loc.fill(pick); await SLEEP(1200); }
+        // University / school typeaheads often need a typed seed before options appear
+        // (Careem "Which University are you graduating from?*").
+        if (!opts.length && /university|college|school|graduating|alma mater/i.test(f.q)) {
+          pick = pick || textAnswer(f.q);
+          if (pick) {
+            await loc.fill('').catch(() => {});
+            await loc.type(String(pick), { delay: 35 }).catch(() => {});
+            await SLEEP(1200);
+          }
+        } else if (!opts.length && pick) {
+          await loc.fill(pick); await SLEEP(1200);
+        }
+        const refreshed = opts.length ? opts : (await page.locator('[role="option"]').allInnerTexts().catch(() => []));
+        if (!pick && refreshed.length) pick = choiceAnswer(f.q, refreshed) || refreshed[0];
         const key = pick ? pick.split(/[\s+(]/).filter(Boolean)[0].replace(/[.*+?^${}()|[\]\\]/g, '\\$&') : '';
-        const opt = key ? page.locator('[role="option"]').filter({ hasText: new RegExp('^\\s*' + key, 'i') }).first() : page.locator('[role="option"]').first();
-        if (await opt.isVisible().catch(() => false)) await opt.click().catch(() => {});
-        else { await loc.press('Enter').catch(() => {}); if (f.required && !pick) unknown.add(f.q); }
+        const opt = key ? page.locator('[role="option"]').filter({ hasText: new RegExp('^\\s*' + key, 'i') }).first() : null;
+        if (opt && await opt.isVisible().catch(() => false)) await opt.click().catch(() => {});
+        else { if (pick) await loc.press('Enter').catch(() => {}); if (f.required && !pick) unknown.add(f.q); }
         await page.keyboard.press('Escape').catch(() => {});
         continue;
       }
@@ -498,16 +570,97 @@ async function fillAll(page, unknown, job = {}) {
       if (v == null || v === '') { if (f.required) unknown.add(f.q); continue; }
       await loc.fill(String(v));
       if (/phone|mobile/i.test(f.q)) await page.keyboard.press('Escape').catch(() => {});
-      if (/location|city/i.test(f.q)) { await SLEEP(1200); const o = page.locator('[role="option"], .pac-item').first(); if (await o.isVisible().catch(() => false)) await o.click().catch(() => {}); }
+      if (PLACE_Q.test(f.q)) {
+        await SLEEP(1200);
+        const texts = (await page.locator('[role="option"], .pac-item').allInnerTexts().catch(() => [])).map(t => t.trim()).filter(Boolean);
+        if (texts.length) {
+          const place = texts.map(t => listedPlaceOption(f.q, t, p)).find(Boolean);
+          if (place) {
+            const o = page.locator('[role="option"], .pac-item').filter({ hasText: place }).first();
+            if (await o.isVisible().catch(() => false)) await o.click().catch(() => {});
+          } else if (f.required) unknown.add(f.q);
+        }
+      }
     } catch {}
   }
   for (const g of Object.values(radios)) {
     if (g.some(r => r.checked)) continue;
+    if (PLACE_Q.test(g[0].q)) {
+      const r = g.find(x => listedPlaceOption(g[0].q, x.optLabel, p));
+      if (!r) { unknown.add(g[0].q); continue; }
+      await clickRadio(page, r);
+      continue;
+    }
     const pick = choiceAnswer(g[0].q, g.map(r => r.optLabel));
-    const r = g.find(x => x.optLabel === pick) || g[0];
-    await page.locator(`[data-jf="${r.id}"]`).check({ force: true }).catch(() => {});
+    const r = g.find(x => x.optLabel === pick)
+      || g.find(x => pick && x.optLabel && (x.optLabel.startsWith(String(pick).slice(0, 40)) || String(pick).startsWith(x.optLabel.slice(0, 40))))
+      || (pick && /^no\b/i.test(pick) ? g.find(x => /^no\b/i.test(x.optLabel || '')) : null)
+      || (pick && /^yes\b/i.test(pick) ? g.find(x => /^yes\b/i.test(x.optLabel || '')) : null)
+      || g[0];
+    await clickRadio(page, r);
   }
+
+  // Ashby (and some other ATS) render Yes/No as role=radio buttons without a native
+  // <input type=radio>, so SCAN misses them. Click any still-unanswered age/consent gate
+  // by its visible label so submit validation does not bounce with "Missing entry".
+  await clickRoleRadios(page);
+  await clickAshbyYesNo(page);
   return fields.length;
+}
+
+/** Prefer a real user-gesture click on the label/control so React-controlled radios update. */
+async function clickRadio(page, r) {
+  const input = page.locator(`[data-jf="${r.id}"]`);
+  const wrapped = page.locator(`label:has([data-jf="${r.id}"])`).first();
+  if (await wrapped.isVisible().catch(() => false)) {
+    await wrapped.click({ timeout: 2000 }).catch(() => {});
+  } else if (r.optLabel) {
+    const byText = page.getByRole('radio', { name: r.optLabel }).first();
+    if (await byText.isVisible().catch(() => false)) await byText.click({ timeout: 2000 }).catch(() => {});
+  }
+  await input.check({ force: true }).catch(() => {});
+  await input.click({ force: true }).catch(() => {});
+}
+
+async function clickRoleRadios(page) {
+  const groups = page.locator('[role="radiogroup"], fieldset:has([role="radio"])');
+  const n = await groups.count().catch(() => 0);
+  for (let i = 0; i < n; i++) {
+    const g = groups.nth(i);
+    const checked = g.locator('[role="radio"][aria-checked="true"]');
+    if (await checked.count().catch(() => 0)) continue;
+    const q = ((await g.locator('legend, [class*="label"], p, span').first().innerText().catch(() => ''))
+      || (await g.getAttribute('aria-label').catch(() => '')) || '').slice(0, 200);
+    const opts = await g.locator('[role="radio"]').allInnerTexts().catch(() => []);
+    const pick = choiceAnswer(q, opts.map(t => t.trim()).filter(Boolean));
+    if (!pick) continue;
+    const opt = g.locator('[role="radio"]').filter({ hasText: new RegExp(`^\\s*${pick.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, 'i') }).first();
+    if (await opt.isVisible().catch(() => false)) await opt.click({ timeout: 2000 }).catch(() => {});
+  }
+}
+
+/** Ashby Yes/No widgets are <button class="ashby-application-form-input-yesno-option">, not radios. */
+async function clickAshbyYesNo(page) {
+  const entries = page.locator('.ashby-application-form-field-entry:has(.ashby-application-form-input-yesno-option)');
+  const n = await entries.count().catch(() => 0);
+  for (let i = 0; i < n; i++) {
+    const entry = entries.nth(i);
+    const selected = entry.locator('.ashby-application-form-input-yesno-option[aria-pressed="true"], .ashby-application-form-input-yesno-option[class*="selected"], .ashby-application-form-input-yesno-option[class*="active"]');
+    if (await selected.count().catch(() => 0)) continue;
+    // Already toggled if the hidden checkbox is checked.
+    const box = entry.locator('input[type="checkbox"]');
+    if (await box.isChecked().catch(() => false)) continue;
+    const q = ((await entry.locator('.ashby-application-form-question-title, label').first().innerText().catch(() => '')) || '').slice(0, 200);
+    const opts = (await entry.locator('.ashby-application-form-input-yesno-option').allInnerTexts().catch(() => [])).map(t => t.trim()).filter(Boolean);
+    const pick = choiceAnswer(q, opts.length ? opts : ['Yes', 'No'])
+      || (/over the age of\s*18|at least\s*18|office\s*\d+\s*days|hybrid model|comfortable with this arrangement/i.test(q) ? 'Yes' : null);
+    if (!pick) continue;
+    const btn = entry.locator('.ashby-application-form-input-yesno-option').filter({ hasText: new RegExp(`^\\s*${pick.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') }).first();
+    if (await btn.isVisible().catch(() => false)) {
+      await btn.click({ timeout: 2000 }).catch(() => {});
+      await SLEEP(200);
+    }
+  }
 }
 
 export async function applyForm({ url, timeoutMs = 120000, submit = true, job = {} }) {
@@ -575,6 +728,14 @@ export async function applyForm({ url, timeoutMs = 120000, submit = true, job = 
 
     if (/linkedin\.com\/(login|authwall)/.test(page.url())) { await encounter('form', 'redirected to linkedin login/authwall', { url: page.url(), page }); return { ok: false, result: 'needs_manual', detail: 'redirected to ' + page.url().slice(0, 80), finalUrl }; }
     if (/workday|myworkdayjobs|icims|taleo|successfactors|oraclecloud|brassring/.test(finalUrl)) return { ok: false, result: 'needs_manual', detail: 'account-gated ATS (Workday/iCIMS/Taleo) — one-click for you', finalUrl };
+
+    // Closed / removed Ashby (and similar) postings render a shell with "Job not found"
+    // and no inputs. Treat as closed — do not record a false "no form" encounter.
+    const pageText = await page.evaluate(() => (document.body?.innerText || '').slice(0, 1200)).catch(() => '');
+    if (/job not found|this (job|position|role) (is no longer available|has been (filled|closed|removed)|was not found)|no longer accepting applications|position has been filled/i.test(pageText)) {
+      flog('closed posting on', hostOf(finalUrl));
+      return { ok: true, result: 'closed', detail: 'job posting no longer available', finalUrl };
+    }
 
     let n = await fillAll(page, unknown, job);
     if (n < 2) {

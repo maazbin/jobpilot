@@ -65,7 +65,11 @@ function escapeRegExp(value) {
 /** Approximate USD exchange rates for salary conversion. */
 const FX = { usd: 1, eur: 0.92, gbp: 0.79, pkr: 280, inr: 84, aed: 3.67, sar: 3.75, qar: 3.64, cad: 1.37 };
 
-const CURRENT_SALARY_RE = /\b(current|present|existing|currently\s+(earn|make)|current\s+(pay|salary|compensation))\b|were you (making|earning|paid)|previous (role|job).*(salary|pay|making)|last drawn|present ctc/;
+const CURRENT_SALARY_RE = /\b(current|present|existing|currently\s+(earn|make)|current\s+(pay|salary|compensation))\b|were you (making|earning|paid)|previous (role|job).*(salary|pay|making)|last drawn|present ctc|salario actual|pretensi[oó]n actual/;
+
+// Salary wording across the languages application forms use. A Spanish "expectativa salarial"
+// used to miss this gate and stall as an unanswered question. Language alone does not pick a currency.
+const SALARY_Q = /salary|compensation|\bctc\b|expected pay|pay expectation|financial expectations?|monthly gross|gross monthly|remuneration|were you making|desired (pay|salary)|current (pay|salary)|expectativa salarial|pretensi[oó]n salarial|pretens[aã]o salarial|sal[aá]rio (esperado|desejado|pretendido)|rango salarial|banda salarial|faixa salarial|remunera[cç][aã]o|gehaltsspanne|gehaltsvorstellung|gehaltswunsch|fourchette de (salaire|r[eé]mun[eé]ration)|pr[eé]tentions? salariales?|pretesa (economica|salariale)|retribuzione attesa/i;
 
 // Detect the currency a salary question asks for. DEFAULT is PKR (the user's home market) —
 // only switch to another currency when the question explicitly names it (USD/$/dollar, etc.).
@@ -146,21 +150,15 @@ export function salaryFor(q, p, numeric = false) {
   if (!s) return numeric ? null : 'Negotiable';
 
   const baseCur = s.currency;                 // currency the stored figure is in
-  const cur = requestedCurrency(q, baseCur);   // currency the QUESTION wants (stored currency default)
+  // A question that does not name a currency keeps the stored currency. Defaulting the
+  // question to a different currency multiplied the stored figure by the FX rate.
+  const cur = requestedCurrency(q, baseCur);
   const period = requestedPeriod(q, s.period || 'month');
   const basePeriod = s.period || 'month';
   const toMonthly = v => basePeriod === 'year' ? v / 12 : basePeriod === 'hour' ? v * 160 : v;
   const fromMonthly = v => period === 'year' ? v * 12 : period === 'hour' ? v / 160 : v;
-  // Convert from the stored currency to the requested currency via the USD table. When the
-  // question does not name a different currency, baseCur === cur and the factor is exactly 1 —
-  // so a PKR-stored / PKR-asked figure is NEVER multiplied (that FX hop produced the 56,000,000
-  // garbage: 200000 / FX.usd * FX.pkr). Real cross-currency questions keep the same ratio.
   const fxFactor = baseCur === cur ? 1 : (FX[cur] || 1) / (FX[baseCur] || 1);
   const convert = v => formatSalaryValue(fromMonthly(toMonthly(v) * fxFactor), cur, period);
-
-  // Guardrail: a salary answer can never exceed ~50× the stored monthly-equivalent expectation
-  // (converted to the same currency/period). If a stray FX hop ever yields an implausible
-  // magnitude, fall back to the direct no-FX figure instead of emitting an 8-digit number.
   const expected = s.value || s.min || s.max || 0;
   const sane = v => {
     const band = formatSalaryValue(fromMonthly(toMonthly(expected)) * fxFactor, cur, period);
@@ -197,7 +195,7 @@ export function textAnswer(question, { numeric = false } = {}) {
   //    Only skip this shortcut when the question names a SPECIFIC technology that the user
   //    has an explicit per-tech answer for (those are handled by the normal learned lookup).
   const yrsProfile = p.yearsExperience ? String(p.yearsExperience) : '';
-  const isGenericYears = /\bhow many years?\b|\byears? of (hands-on |professional |work |commercial |relevant |overall |total )*(experience|exp)\b/i.test(q)
+  const isGenericYears = /\bhow many years?\b|\byears? of (hands-on |professional |work |commercial |relevant |overall |total )*(experience|exp)\b|cu[aá]ntos a[nñ]os|anos de experi|jahre (berufs|praxis)?erfahrung|ann[eé]es d.exp[eé]rience|anni di esperienza/i.test(q)
     && !/\b(with|in)\s+[a-z]/i.test(q.replace(/years? of (hands-on|professional|work|commercial|relevant|overall|total)/gi, ''));
   if (yrsProfile && isGenericYears) {
     recordAgentAnswer(question, yrsProfile, 'yearsExperience from profile (generic years question)');
@@ -208,7 +206,7 @@ export function textAnswer(question, { numeric = false } = {}) {
   //     salaryFor() — the single source of truth — before any learned/profile-answer override
   //     (those were storing verbose strings like "280,000 PKR/month (negotiable)" that don't
   //     fit numeric fields or respect the question's currency).
-  if (/salary|compensation|\bctc\b|expected pay|pay expectation|financial expectations?|monthly gross|gross monthly|remuneration|were you making|desired (pay|salary)|current (pay|salary)/.test(q)) {
+  if (SALARY_Q.test(q)) {
     const sal = salaryFor(question, p, numeric);
     if (sal != null && sal !== '') { recordAgentAnswer(question, sal, 'currency-aware salaryFor'); return sal; }
   }
@@ -248,7 +246,7 @@ export function textAnswer(question, { numeric = false } = {}) {
 
   if (/how many years|years of (work |professional )?experience|years experience|experience (do you have|in years)/.test(q)) {
     derived = years || null; basis = 'yearsExperience from profile';
-  } else if (/salary|compensation|expected pay|pay expectation|financial expectations?|monthly gross|gross monthly|\bctc\b|remuneration|\brate\b|expectation/.test(q)) {
+  } else if (SALARY_Q.test(q) || /\brate\b|expectation/.test(q)) {
     derived = salaryFor(q, p, numeric); basis = 'salary from profile';
   } else if (/first name|given name/.test(q)) {
     derived = p.firstName || first || null; basis = 'name from profile';
@@ -267,10 +265,14 @@ export function textAnswer(question, { numeric = false } = {}) {
     derived = L.github || null; basis = 'github from profile';
   } else if (/portfolio|personal site|website|\burl\b/.test(q)) {
     derived = L.portfolio || L.website || L.github || null; basis = 'portfolio/links from profile';
-  } else if (/\bcity\b|location|where.*(based|located)|address|country of residence/.test(q)) {
-    derived = p.location || null; basis = 'location from profile';
-  } else if (/country/.test(q)) {
+  } else if (/\(country\)|country of residence|which country|current country|\bcountry\b/.test(q) && !/\bcity\b/.test(q)) {
+    // Careem et al. ask "Where are you currently located? (Country)*" — must be country, not city.
     derived = p.country || (p.location || '').split(',').pop().trim() || null; basis = 'country from profile';
+  } else if (/\bcity\b|location|where.*(based|located)|address/.test(q)) {
+    derived = p.location || null; basis = 'location from profile';
+  } else if (/university|college|school.*(name|attend)|graduating from|alma mater/.test(q)) {
+    derived = ans(p, 'university', p.university || p.school || (p.education ? `Graduated (${p.education})` : null));
+    basis = 'university/education from profile';
   } else if (/notice period|how soon|start date|when can you start|availability to start/.test(q)) {
     const daysOnly = /notice period[^?]*\bdays?\b/.test(q);
     derived = numeric || daysOnly
@@ -340,96 +342,89 @@ export function textAnswer(question, { numeric = false } = {}) {
   return null;
 }
 
-// Country tokens the work-auth / sponsorship / residence logic recognizes in a question. A
-// question that names one of these is "about" that country; if it is NOT in the user's
-// authorizedIn list the truthful answer to "are you authorized to work there" is No (and the
-// truthful answer to "do you require sponsorship" is Yes).
-const COUNTRY_TOKENS = [
-  'united states', 'u.s.', 'us', 'usa', 'america',
-  'united kingdom', 'u.k.', 'uk', 'britain', 'england',
-  'canada', 'australia', 'new zealand', 'ireland', 'singapore',
-  'united arab emirates', 'uae', 'dubai', 'abu dhabi',
-  'saudi arabia', 'ksa', 'qatar', 'kuwait', 'bahrain', 'oman',
-  'germany', 'netherlands', 'france', 'spain', 'ireland', 'eu', 'europe', 'european union',
-  'pakistan', 'india',
-];
+const CONSENT_Q = /\bagb\b|\bterms\b|\bconditions\b|privacy|datenschutz|confidentialit|condizioni|\btermini\b|t[eé]rminos|privacidad|polic(y|ies)|\bconsent\b|acknowledg|\bagree\b|\baccept\b|zustimm|einverstanden|bedingungen|i have read|certif|confirm that|truthful|accurate/i;
+const NEG_CONSENT_Q = /\b(do not|don't|not)\s+(agree|accept|consent)|nicht\s+zu(stimm|)|keine\s+zustimmung|je n'accepte pas|ne pas accepter|no acepto|no estoy de acuerdo/i;
+
+/** True when the question asks the applicant to accept terms, privacy, or a certification. */
+export function isConsentQuestion(question) {
+  const s = String(question || '');
+  if (!s || NEG_CONSENT_Q.test(s)) return false;
+  if (/authori[sz]ed to work|right to work|work permit|legally authori/i.test(s)) return false;
+  return CONSENT_Q.test(s);
+}
 
 /**
- * Resolve a Yes/No application question truthfully from the user's work-authorization and
- * country. Pure (no profile I/O), so it is both used in production (choiceAnswer) and unit-tested.
- *
+ * Truthful yes/no for sponsorship, citizenship, residence, and disability.
+ * Returns null when the question is not one of those, so the caller keeps its own rule.
+ * Does not invent a skill, a disability, or a country the profile does not name.
  * @param {string} question
- * @param {object} ctx
- * @param {string} ctx.yesLabel  the actual "Yes"-style option label present in the form
- * @param {string} ctx.noLabel   the actual "No"-style option label present in the form
- * @param {object} [ctx.workAuth] { authorizedIn:[], needsSponsorship, willingToRelocate }
- * @param {string} [ctx.country]  the user's country (e.g. "Pakistan")
- * @returns {string|null} yesLabel, noLabel, or null if genuinely ambiguous
+ * @param {{yesLabel?:string, noLabel?:string, workAuth?:object, country?:string}} ctx
+ * @returns {string|null}
  */
 export function resolveYesNo(question, { yesLabel, noLabel, workAuth = {}, country = '' } = {}) {
   const q = String(question || '').toLowerCase();
-  if (!yesLabel && !noLabel) return null;
+  if (!yesLabel || !noLabel) return null;
   const wa = workAuth || {};
-  const authIn = (Array.isArray(wa.authorizedIn) && wa.authorizedIn.length
-    ? wa.authorizedIn
-    : (country ? [country] : []))
+  const authIn = (Array.isArray(wa.authorizedIn) ? wa.authorizedIn : [])
     .map(s => String(s || '').toLowerCase()).filter(Boolean);
   const userCountry = String(country || '').toLowerCase();
+  const named = questionCountry(q);
+  const authorizedThere = named
+    ? authIn.some(c => named.includes(c) || c.includes(named) || (named === 'united states' && /\b(?:us|u\.s\.|usa|united states)\b/.test(c)))
+    : false;
 
-  // Which country (if any) does the question name, and is the user authorized there?
-  const namedCountry = COUNTRY_TOKENS.find(tok => new RegExp(`\\b${escapeRegExp(tok)}\\b`).test(q));
-  const authorizedInNamed = namedCountry
-    ? authIn.some(c => namedCountry.includes(c) || c.includes(namedCountry))
-    : authIn.some(c => q.includes(c));
-
-  // Sponsorship / visa: truthful answer is Yes when the role names a country the user is NOT
-  // authorized in (a Pakistan user abroad needs sponsorship). Only No when explicitly not needed
-  // or the named country is one they are authorized in.
   if (/sponsor|visa/.test(q)) {
     if (wa.needsSponsorship === false) return noLabel;
     if (wa.needsSponsorship === true) return yesLabel;
-    if (namedCountry) return authorizedInNamed ? noLabel : yesLabel;
-    return authIn.length ? noLabel : yesLabel;
+    if (named) return authorizedThere ? noLabel : yesLabel;
+    return null;
   }
 
-  if (/relocat/.test(q)) {
-    if (wa.willingToRelocate === false) return noLabel;
-    return wa.willingToRelocate ? yesLabel : noLabel;
-  }
+  if (/disabilit|reasonable adjustments?|require (any )?(adjustments|accommodations)/.test(q)) return noLabel;
 
-  // Authorized / right-to-work / work permit: Yes only when authorized in the named country (or
-  // the question is clearly about remote-anywhere with no restricting country). Otherwise No.
-  if (/legally|authori[sz]ed|right to work|eligible to work|work permit|permit to work/.test(q)) {
-    if (namedCountry) return authorizedInNamed ? yesLabel : noLabel;
-    if (/remote|anywhere/.test(q)) return yesLabel;
-    return authIn.some(c => q.includes(c)) ? yesLabel : noLabel;
-  }
+  // Age gates on ATS forms (Ashby et al.) — adult applicants are over 18.
+  if (/over the age of\s*18|at least\s*18|18\s*years?\s*(of age|old)|aged?\s*18\+|legal(?:ly)?\s*adult/.test(q)) return yesLabel;
 
-  // Legal-screening negatives: convicted/criminal/non-compete/related/currently-employed → No.
-  if (/convicted|criminal|felony|non-?compete|related to anyone|previously (worked|employed)|currently employed by|been employed by/.test(q)) {
+  // Hybrid/office "already based here?" gates — only Yes when the profile place is
+  // named in the question. Willingness to relocate is not the same as already local.
+  if (/based in (this|the listed)|work (from|in) (the )?office|in person \d|hybrid (work )?model|listed location/.test(q)) {
+    const place = String(userCountry || '').toLowerCase();
+    if (place && q.includes(place)) return yesLabel;
     return noLabel;
   }
 
-  // Residence / citizenship / located-in: truthful from the user's country. A question naming a
-  // country that is NOT the user's → No (a Pakistan user does not reside in California / is not a
-  // U.S. citizen / federal-contractor citizenship). Naming the user's own country → Yes.
-  if (/reside in|resident of|residing in|\bcitizen\b|citizenship|located in|based in|do you live in|federal contractor/.test(q)) {
-    if (namedCountry) {
-      const matchesUser = userCountry && (namedCountry.includes(userCountry) || userCountry.includes(namedCountry));
-      return matchesUser ? yesLabel : noLabel;
-    }
-    // "Do you reside in California?" etc. — a US sub-region the Pakistan user is not in → No.
-    if (/california|texas|new york|\bu\.?s\.?\b|united states|\buk\b|canada/.test(q) && userCountry && !/united states|\buk\b|canada/.test(userCountry)) {
-      return noLabel;
-    }
-  }
-
-  // Consent / agreement / capability: standard Yes.
-  if (/background check|drug test|agree|consent|acknowledge|comfortable|willing|able to|can you|do you have|have you|did you|are you|familiar|experience|worked (with|on|in)|built|shipped|proficient|startup|fast.?paced|agile|environment/.test(q)) {
-    return yesLabel;
+  if (/\bcitizen\b|citizenship|reside in|resident of|residing in|do you live in|located in|based in|federal contractor/.test(q)) {
+    if (!named || !userCountry) return null;
+    const matchesUser = named.includes(userCountry) || userCountry.includes(named)
+      || (named === 'united states' && /\b(?:us|u\.s\.|usa|united states)\b/.test(userCountry));
+    return matchesUser ? yesLabel : noLabel;
   }
 
   return null;
+}
+
+/** Country a work-auth question is about. Bare "us" in "let us" is not a country. */
+function questionCountry(q) {
+  if (/\bunited states\b|\bu\.s\b|\busa\b/.test(q)) return 'united states';
+  if (/\b(?:work|visa|sponsor|citizen|residen|authori[sz]|employ).{0,48}\b(?:us|u\.s\.)\b|\b(?:us|u\.s\.)\b.{0,48}\b(?:work|visa|sponsor|citizen|residen|authori[sz]|employ)/.test(q)) return 'united states';
+  if (/\bunited kingdom\b|\bu\.k\.\b/.test(q)) return 'united kingdom';
+  if (/\bcanada\b/.test(q)) return 'canada';
+  if (/\bunited arab emirates\b|\buae\b|\bdubai\b/.test(q)) return 'united arab emirates';
+  if (/\bpakistan\b/.test(q)) return 'pakistan';
+  if (/\bindia\b/.test(q)) return 'india';
+  if (/\bgermany\b|\bdeutschland\b/.test(q)) return 'germany';
+  if (/\bfrance\b/.test(q)) return 'france';
+  if (/\bspain\b|\bespa[nñ]a\b/.test(q)) return 'spain';
+  return '';
+}
+
+const NUM_WORDS = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10 };
+function looseOption(s) {
+  return String(s || '').toLowerCase()
+    .replace(/\b(one|two|three|four|five|six|seven|eight|nine|ten)\b/g, m => NUM_WORDS[m])
+    .replace(/\b(within|in|after|by|approximately|about|around)\b/g, ' ')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
 }
 
 /**
@@ -449,7 +444,8 @@ export function choiceAnswer(question, options) {
   const learned = learnedAnswer(question);
   if (learned) {
     const m = opts.find(o => o.toLowerCase() === learned.toLowerCase())
-      || opts.find(o => o.toLowerCase().startsWith(learned.toLowerCase()));
+      || opts.find(o => o.toLowerCase().startsWith(learned.toLowerCase()))
+      || opts.find(o => looseOption(o) && looseOption(o) === looseOption(learned));
     if (m) { usedAnswer(question); return m; }
   }
 
@@ -471,59 +467,42 @@ export function choiceAnswer(question, options) {
   let derived = null;
   let basis = '';
 
+  // Greenhouse/Ashby consent comboboxes often list "I Accept" / "I Agree" among
+  // unrelated options (or after a long country list). Prefer that label.
+  if (isConsentQuestion(question)) {
+    const accept = find(/^i (accept|agree|consent)\b/) || find(/\b(accept|agree|consent)\b/);
+    if (accept) {
+      recordAgentAnswer(question, accept, 'consent option on ATS form');
+      return accept;
+    }
+  }
+
   if (yes && no) {
-    // Delegate the yes/no decision (work-auth, sponsorship, residence, consent, legal screening)
-    // to the pure, unit-tested resolveYesNo() so production and tests share one source of truth.
-    derived = resolveYesNo(question, {
-      yesLabel: yes, noLabel: no,
-      workAuth: wa, country: p.country || (p.location || '').split(',').pop().trim(),
+    const yn = resolveYesNo(question, {
+      yesLabel: yes, noLabel: no, workAuth: wa,
+      country: p.country || (p.location || '').split(',').pop().trim(),
     });
-    basis = 'yes/no resolved from workAuth + country (resolveYesNo)';
+    if (yn) {
+      derived = yn; basis = 'yes/no from work authorization and country';
+    } else if (/sponsor|visa/.test(q)) {
+      derived = wa.needsSponsorship ? yes : no; basis = 'workAuth.needsSponsorship from profile';
+    } else if (/relocat/.test(q)) {
+      derived = wa.willingToRelocate ? yes : no; basis = 'workAuth.willingToRelocate from profile';
+    } else if (/legally|authori[sz]ed|right to work|eligible to work|work permit/.test(q)) {
+      derived = (authIn.some(c => q.includes(c)) || /remote|anywhere/.test(q) && !/(us|united states|uk|eu|canada)\b/.test(q))
+        ? yes : no;
+      basis = 'workAuth.authorizedIn from profile';
+    } else if (/convicted|criminal|felony|non-?compete|related to anyone|previously (worked|employed)|currently employed by|been employed by/.test(q)) {
+      derived = no; basis = 'standard no for legal screening questions';
+    } else if (/background check|drug test|agree|consent|acknowledge|comfortable|willing|able to|can you|do you have|have you|did you|are you|familiar|experience|worked (with|on|in)|built|shipped|proficient|startup|fast.?paced|agile|environment/.test(q)) {
+      derived = yes; basis = 'standard yes for consent/agreement questions';
+    }
   } else if (/years/.test(q)) {
     const y = parseFloat(textAnswer('years of experience') || '0');
     derived = opts.find(o => { const m = o.match(/(\d+)\s*[-–to]+\s*(\d+)/); return m && y >= +m[1] && y <= +m[2]; })
       || opts.find(o => { const m = o.match(/(\d+)\s*\+/); return m && y >= +m[1]; })
       || opts[opts.length - 1];
     basis = 'yearsExperience from profile';
-  } else if (/\b(level of|rate your|your (level|experience|proficiency)|how (would you rate|experienced)|hands-on experience|experience (with|in|using)|familiar(ity)? with|proficiency (with|in))\b/.test(q)
-             && opts.some(o => /no experience|basic|beginner|intermediate|advanced|expert|proficient|strong|hands-on|production|some of these|most\/all|regularly|daily|occasionally|never/i.test(o))) {
-    // Skill / competency-scale question (e.g. "What is your level of experience with
-    // Python/Flask and React/TypeScript?" → No experience / Basic / Intermediate / Advanced).
-    // Judge from the profile's own skills: if the question names technologies the user actually
-    // lists, answer at the TOP of the scale (they have production experience); if it names a mix
-    // and the user matches most, still answer high; only when the user matches NONE of the named
-    // techs do we fall to a lower rung. Never silently default to "No experience" for a tech the
-    // user has — that is the bug that was sending false negatives.
-    const skills = (p.skills || []).map(s => String(s).toLowerCase());
-    const skillText = skills.join(' ');
-    // Extract candidate tech tokens from the question (word-ish, length>=2), ignore filler.
-    const FILLER = /^(what|is|your|level|of|the|with|and|or|experience|hands|hands-on|do|you|have|using|in|a|an|to|for|rate|how|would|proficiency|familiar|familiarity|years?|professional|development|such|as|including|technologies|tools|frameworks)$/;
-    const tokens = q
-      .replace(/[^a-z0-9+./#\s-]/g, ' ')
-      .split(/[\s,/]+/)
-      .map(t => t.replace(/[.*+?^${}()|[\]\\]/g, '').trim())
-      .filter(t => t.length >= 2 && !FILLER.test(t));
-    const named = tokens.filter(t => /^[a-z]/.test(t));
-    const matched = named.filter(t =>
-      skillText.includes(t) || skills.some(s => s.includes(t) || t.includes(s)));
-    // Map the available option labels to a rank so we can pick the right rung.
-    const rank = o => {
-      const s = o.toLowerCase();
-      if (/no experience|never|\bnone\b/.test(s)) return 0;
-      if (/basic|beginner|occasionally|exposure/.test(s)) return 1;
-      if (/intermediate|some of these|regularly|comfortable/.test(s)) return 2;
-      if (/advanced|expert|strong|production|proficient|most\/all|daily|hands-on project/.test(s)) return 3;
-      return 2; // unlabeled middle option
-    };
-    const sorted = [...opts].sort((a, b) => rank(a) - rank(b));
-    const top = sorted[sorted.length - 1];
-    const mid = sorted[Math.min(sorted.length - 1, Math.max(0, sorted.length - 2))];
-    // All/most named techs are in the profile → top rung. Some → mid/high. None recognised but
-    // the question is generically about "software development experience" → top (3 yrs pro).
-    if (named.length === 0 || matched.length >= Math.ceil(named.length / 2)) derived = top;
-    else if (matched.length > 0) derived = mid;
-    else derived = mid; // named techs we don't list: claim a middle rung, never "No experience"
-    basis = `skill-scale from profile skills (named=${named.join('/')||'generic'}, matched=${matched.length})`;
   } else if (/english|proficien/.test(q)) {
     derived = find(/native|bilingual|fluent|professional/) || opts[opts.length - 1];
     basis = 'default English proficiency';

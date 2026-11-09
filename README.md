@@ -2,7 +2,7 @@
 
 # JobPilot
 
-### One brain. Six doors. A hunt that learns the lock.
+### One brain. Eight doors. A hunt that learns the lock.
 
 You point a coding agent at this folder. That agent is the brain. JobPilot is the body: your browser, a memory that never asks twice, and a loop that turns a stuck page into a fix on GitHub. There is no model hiding in here.
 
@@ -10,6 +10,8 @@ You point a coding agent at this folder. That agent is the brain. JobPilot is th
 <img alt="LinkedIn" src="https://img.shields.io/badge/LinkedIn-0A66C2?style=for-the-badge&logo=linkedin&logoColor=white">
 <img alt="Indeed" src="https://img.shields.io/badge/Indeed-003A9B?style=for-the-badge&logo=indeed&logoColor=white">
 <img alt="Glassdoor" src="https://img.shields.io/badge/Glassdoor-0CAA41?style=for-the-badge&logo=glassdoor&logoColor=white">
+<img alt="Y Combinator" src="https://img.shields.io/badge/Y%20Combinator-F26522?style=for-the-badge">
+<img alt="Wellfound" src="https://img.shields.io/badge/Wellfound-111111?style=for-the-badge">
 <img alt="X" src="https://img.shields.io/badge/X-111111?style=for-the-badge&logo=x&logoColor=white">
 <img alt="Instagram" src="https://img.shields.io/badge/Instagram-E4405F?style=for-the-badge&logo=instagram&logoColor=white">
 <img alt="Gmail" src="https://img.shields.io/badge/Gmail-EA4335?style=for-the-badge&logo=gmail&logoColor=white">
@@ -17,9 +19,9 @@ You point a coding agent at this folder. That agent is the brain. JobPilot is th
 
 The first minutes are quiet on purpose. Dependencies install themselves. Leave that window open. The browser opens once, on first onboard, and you sign in on every platform above. After that, those sessions stay.
 
-**Stable release: [v3.4.0](https://github.com/maazbin/jobpilot/releases/tag/v3.4.0).** The setup page and the dashboard test whether X, LinkedIn, and Gmail are actually signed in.
+**Stable release: [v3.6.0](https://github.com/maazbin/jobpilot/releases/tag/v3.6.0).** Y Combinator and Wellfound are in the hunt. An open role is emailed to a published founder address. The Apply button is not the whole path.
 
-[![Stable](https://img.shields.io/badge/release-v3.4.0-22c55e.svg)](https://github.com/maazbin/jobpilot/releases/tag/v3.4.0)
+[![Stable](https://img.shields.io/badge/release-v3.6.0-22c55e.svg)](https://github.com/maazbin/jobpilot/releases/tag/v3.6.0)
 [![MIT License](https://img.shields.io/badge/license-MIT-14532d.svg)](LICENSE)
 [![MCP](https://img.shields.io/badge/protocol-MCP-2563eb.svg)](https://modelcontextprotocol.io)
 [![Node](https://img.shields.io/badge/node-%E2%89%A518-166534.svg)](https://nodejs.org)
@@ -155,6 +157,24 @@ This is the line we will keep. New work happens after this tag.
 - Commits from the evolver are authored as the GitHub username, not a personal name or a personal email.
 
 ---
+
+## v3.6.0
+
+The signed-in Y Combinator jobs page is `ycombinator.com/jobs`. The account control is a button, and Open messages is in the header. A footer Sign In link opens the Work at a Startup application and is not the account control. Remote Software Engineer Jobs is the next list. When those cards are country lists, the companies directory is next if it already shows My profile. The letter goes to a founder address published on the YC company page, with the CV. A role stays when it is remote with no country list, or it offers visa or relocation in a place on the profile. A US office is left, even when the card says Remote and Will sponsor. A page that says the work is in person in the United States is left too.
+
+Wellfound starts on the signed-in jobs page. A search that hides roles outside one city is not the senior list. The about form saves the GitHub URL, the portfolio, the bio, and years. A skill is the suggestion that starts with the skill name.
+
+The dashboard mix has a slider for Y Combinator and a slider for Wellfound. Both start at 0 until you give them a share. The path traces are [`docs/paths/ycombinator/path.md`](docs/paths/ycombinator/path.md) and [`docs/paths/wellfound/path.md`](docs/paths/wellfound/path.md). Gmail reported the CV sent for a Berlin role that will sponsor, and for a remote AI Engineer role with no country list. Both letters used a founder address published on the page.
+
+## v3.5.0
+
+X hiring posts are scraped when the mix gives X a share. The path trace follows an apply link on the post to the employer form. An Ashby page that only says the company is interested is not recorded as a submitted application.
+
+The Strategies tab records what worked and what failed on each platform. A human verdict of wrong blocks that step. Instagram is read from the comments and the bio before a message is sent.
+
+The first run says when dependencies are installing. Sign-in is requested once. When a site login fails, Google sign-in is tried once, and a second failure puts that site on the dashboard sign-in panel.
+
+Easy Apply waits out a stuck review step, accepts a consent widget, and waits for the next step to render. The LinkedIn invite note is taken from the dialog that is actually visible. Login-page chrome is not stored as an unanswered application question. Indeed applystart is followed until the browser leaves Indeed. A role that requires US citizenship or US work authorization is skipped when the profile is not authorized in the United States. A salary answer keeps the currency stored on the profile. Country and phone are filled from the profile.
 
 ## v3.4.0
 

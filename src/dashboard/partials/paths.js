@@ -64,7 +64,8 @@ export function readPathTraces(dir = PATHS) {
     const hops = tree.nodes.length
       ? tree.nodes.flatMap(n => n.branches)
       : (tree.hops || []);
-    return { site: d.name, meta: tree.meta, nodes: tree.nodes, hops };
+    const title = (text.match(/^#\s+(.+)$/m) || [null, d.name])[1].trim();
+    return { site: d.name, title, meta: tree.meta, nodes: tree.nodes, hops };
   });
 }
 
@@ -122,7 +123,7 @@ export function renderPathsTab(traces) {
   return traces.map(t => {
     const meta = Object.entries(t.meta || {}).map(([k, v]) => `${k}: ${v}`).join(' · ');
     if (!t.nodes.length) {
-      return `<h2>${esc(t.site)}</h2><div class="trace">${t.hops.map(h => `<div class="hop hop-${kind(h.result)}"><b>${esc(h.from)}</b><span>${esc(h.option)}</span><em>${esc(h.to)}</em><i>${esc(h.result)}</i></div>`).join('')}</div>`;
+      return `<h2>${esc(t.title || t.site)}</h2><div class="trace">${t.hops.map(h => `<div class="hop hop-${kind(h.result)}"><b>${esc(h.from)}</b><span>${esc(h.option)}</span><em>${esc(h.to)}</em><i>${esc(h.result)}</i></div>`).join('')}</div>`;
     }
     const byId = new Map(t.nodes.map(n => [n.id, n]));
     const drawn = new Set();
@@ -130,6 +131,6 @@ export function renderPathsTab(traces) {
       drawn.add(n.id);
       return renderNode(n, byId, [n.id], drawn);
     }).join('');
-    return `<h2>${esc(t.site)}</h2>${meta ? `<p class="dim">${esc(meta)}</p>` : ''}<div class="trace">${forest}</div>`;
+    return `<h2>${esc(t.title || t.site)}</h2>${meta ? `<p class="dim">${esc(meta)}</p>` : ''}<div class="trace">${forest}</div>`;
   }).join('');
 }
