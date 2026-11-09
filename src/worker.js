@@ -319,20 +319,27 @@ async function scout() {
       }
       if (!running()) break;
 
-      // 3) LinkedIn job LISTINGS — secondary, only every OTHER loop (reduces LinkedIn load +
-      //    throttle risk; posts and the web carry the pipeline). Also gated on login.
+      // 3) LinkedIn job LISTINGS — scrape BOTH Pakistan geo + Worldwide, past week,
+      //    Easy Apply first (fills the easy_apply queue), then all jobs (fills form queue).
       if (i % 2 === 0 && !loginBackoff('LinkedIn')) {
         const jq = jobQ[0];
         beat('scout', `LI jobs: ${jq}`);
         const profile = getProfile();
         const country = String(profile.country || '').toLowerCase();
-        const geoIds = profile.preferences?.locationScope === 'country'
-          ? (country === 'pakistan' ? ['101022442'] : [])
-          : ['92000000'];
+        // Pakistan geoId = 103399526 (verified); also always search Worldwide for remote roles
+        const geoIds = country === 'pakistan'
+          ? ['103399526', '92000000']   // Pakistan + Worldwide
+          : ['92000000'];               // Worldwide only for other countries
         for (const geoId of geoIds) {
-          const rj = await liJobs(jq, { easyOnly: true, tpr: 86400, geoId, pages: 1 });
+          // Easy Apply jobs (past week, 2 pages)
+          const rj = await liJobs(jq, { easyOnly: true,  tpr: 604800, geoId, pages: 2 });
           if (rj.ok) { const { n } = ingest(rj.leads); outcome('job_query', jq, { yieldN: n }); clearLogin('LinkedIn'); }
           else if (notLoggedIn(rj.detail)) flagLogin('LinkedIn', 'Please log into LinkedIn in the JobPilot Chrome window — scraping is paused until you do');
+          await SLEEP(2500);
+          if (!running()) break;
+          // All jobs including non-Easy-Apply (past week, 1 page — secondary)
+          const rjAll = await liJobs(jq, { easyOnly: false, tpr: 604800, geoId, pages: 1 });
+          if (rjAll.ok) { const { n } = ingest(rjAll.leads); outcome('job_query', jq + ':all', { yieldN: n }); }
           await SLEEP(2500);
           if (!running()) break;
         }
@@ -663,8 +670,12 @@ try {
   if (n) say('main', `revived ${n} email lead(s) stuck at the attempt cap (transient-fail self-heal)`);
 } catch {}
 // Keep the repo branch in sync with the main repo on startup (fork → rebase on upstream).
-if (!DRY && getProfile().consent?.autoContribute !== false) {
+// SKIPPED when NO_EVOLVE is set (data-only mode): the startup rebase/reset would otherwise wipe
+// local uncommitted/untracked changes — including the data-only + hook scripts — on every boot.
+if (!DRY && !NO_EVOLVE && getProfile().consent?.autoContribute !== false) {
   try { const { syncBranch } = await import('./contribute.js'); const s = await syncBranch(); say('main', `branch sync: ${s.synced ? 'in sync with ' + (s.upstream || 'origin') : 'skipped (' + (s.reason || '') + ')'}`); } catch {}
+} else if (NO_EVOLVE) {
+  say('main', 'data-only mode — skipping startup branch sync (local changes preserved)');
 }
 let uiPort = 7788;
 try { uiPort = await startServer() || 7788; } catch (e) { say('main', 'dashboard server issue (continuing): ' + (e.message || '').slice(0, 80)); }

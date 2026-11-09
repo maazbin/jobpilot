@@ -4,3 +4,5 @@
 [mcp_servers.jobpilot]
 command = "node"
 args = ["start.js"]
+[mcp_servers.jobpilot.env]
+JOBPILOT_NO_AUTOWORKER = "1"

@@ -23,7 +23,17 @@ import { getProfile } from './profile.js';
 
 const STATE = path.join(DATA, 'worker-state.json');
 const STOPFILE = path.join(DATA, '.stop');
+// Persistent opt-out: a file under data/ (which is gitignored, so it survives every self-evolve
+// git sync/rebase). When present, the worker never auto-starts and the background contribute loop
+// never runs — the ONLY way to start the worker is the agent's explicit data-only launcher. This
+// is set once (scripts/no-autostart.mjs or `npm run no-autostart`) and persists across restarts.
+const NO_AUTOSTART_FILE = path.join(DATA, '.no-autostart');
 const log = (...a) => console.error('[mcp-evolve] ' + a.join(' '));
+
+/** @returns {boolean} true if auto-start of the worker + background evolve loop is disabled. */
+function autoStartDisabled() {
+  return process.env.JOBPILOT_NO_AUTOWORKER === '1' || fs.existsSync(NO_AUTOSTART_FILE);
+}
 
 /** @returns {boolean} true if the always-on worker is alive (heartbeat < 2 min old). */
 export function workerIsLive() {
@@ -45,7 +55,7 @@ export function workerIsLive() {
  * The spawned process is detached + unref'd so it outlives this MCP/server session.
  */
 export function ensureWorkerRunning() {
-  if (process.env.CI || process.env.JOBPILOT_NO_AUTOWORKER === '1') return;
+  if (process.env.CI || autoStartDisabled()) return;
   if (fs.existsSync(STOPFILE)) { log('stop flag present — not auto-starting worker'); return; }
   if (workerIsLive()) return;                          // already running
   try {
@@ -77,10 +87,11 @@ export function startBackgroundEvolve({ syncMs = 2 * 60000, contribMs = 10 * 600
   // syncing + contributing). The only gates are on the CONTRIBUTION step: the user's data-safety
   // consent toggle, the worker stand-down (avoid double-contribution), and CI.
 
-  // If JOBPILOT_NO_AUTOWORKER=1, skip the auto-worker and the background contribute loop.
-  // The user must explicitly start the worker / call tools to begin activity.
-  if (process.env.JOBPILOT_NO_AUTOWORKER === '1') {
-    log('JOBPILOT_NO_AUTOWORKER=1 — background self-evolution loop disabled (call npm run worker to start).');
+  // If auto-start is disabled (JOBPILOT_NO_AUTOWORKER=1 or data/.no-autostart present), skip the
+  // auto-worker AND the background contribute loop entirely. The worker only ever starts via the
+  // agent's explicit data-only launcher; nothing runs — or git-syncs — on its own at boot.
+  if (autoStartDisabled()) {
+    log('auto-start disabled (data/.no-autostart or JOBPILOT_NO_AUTOWORKER=1) — background self-evolution loop OFF. Start the data worker explicitly with `npm run worker:data`.');
     return () => {};
   }
 
