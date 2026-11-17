@@ -13,7 +13,7 @@ import { launchChrome } from './mcp/chrome.js';
 import { verifyLogins } from './agent/browser.js';
 import { initDB, upsertJobs, setStatus, setFields, bumpAttempt, logEmail, log, getJob,
   alreadyEmailed, alreadyApplied, alreadyConnected, logConnect, rows, doneToday, isFakeEmail } from './tracker.js';
-import { liPosts, liJobs, hnHiring, publicBoards, xPosts, relToIso } from './mcp/sources.js';
+import { liPosts, liJobs, liBest, hnHiring, publicBoards, xPosts, relToIso } from './mcp/sources.js';
 import { easyApply } from './mcp/easyapply.js';
 import { applyForm } from './mcp/forms.js';
 import { connect } from './mcp/connect.js';
@@ -322,21 +322,14 @@ async function scout() {
       // 3) LinkedIn job LISTINGS — secondary, only every OTHER loop (reduces LinkedIn load +
       //    throttle risk; posts and the web carry the pipeline). Also gated on login.
       if (i % 2 === 0 && !loginBackoff('LinkedIn')) {
-        const jq = jobQ[0];
-        beat('scout', `LI jobs: ${jq}`);
-        const profile = getProfile();
-        const country = String(profile.country || '').toLowerCase();
-        const geoIds = profile.preferences?.locationScope === 'country'
-          ? (country === 'pakistan' ? ['101022442'] : [])
-          : ['92000000'];
-        for (const geoId of geoIds) {
-          const rj = await liJobs(jq, { easyOnly: true, tpr: 86400, geoId, pages: 1 });
-          if (rj.ok) { const { n } = ingest(rj.leads); outcome('job_query', jq, { yieldN: n }); clearLogin('LinkedIn'); }
-          else if (notLoggedIn(rj.detail)) flagLogin('LinkedIn', 'Please log into LinkedIn in the JobPilot Chrome window — scraping is paused until you do');
-          await SLEEP(2500);
-          if (!running()) break;
-        }
-        say('scout', `jobs "${jq}" done`);
+        // Sweep every profile role across the past 24h, dedup city reposts, drop off-stack
+        // titles, then ingest only the ranked keepers. One call replaces the old single-query pass.
+        beat('scout', 'LI best-jobs sweep');
+        const rb = await liBest({ pages: 1, limit: 20, deep: false });
+        if (rb.ok) { const { n } = ingest(rb.leads); outcome('job_query', 'li_best', { yieldN: n }); clearLogin('LinkedIn'); say('scout', `jobs sweep +${n}`); }
+        else if (notLoggedIn(rb.detail)) flagLogin('LinkedIn', 'Please log into LinkedIn in the JobPilot Chrome window — scraping is paused until you do');
+        await SLEEP(2500);
+        if (!running()) break;
       }
       i++;
       await jitter(PACE.scout);

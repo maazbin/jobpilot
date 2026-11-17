@@ -135,11 +135,24 @@ export function score(text = '', title = '', profile) {
   // required a DevOps-only title and treated "software engineer" / "AI" as not-the-CV,
   // so those emails were skipped before anyone could send them.
   const headGlued = head.replace(/[^a-z0-9]+/g, '');
+  // Normalize titles and roles so "Full-Stack Web Developer", "Frontend Engineer" and
+  // "React.js Developer" match their profile role instead of failing a literal compare.
+  const normRole = s => String(s).toLowerCase()
+    .replace(/[-_/]/g, ' ')
+    .replace(/\bengineers?\b/g, 'developer')
+    .replace(/\breact\s*\.?\s*js\b/g, 'react')
+    .replace(/\bnext\s*\.?\s*js\b/g, 'next')
+    .replace(/\bnode\s*\.?\s*js\b/g, 'node')
+    .replace(/\s+/g, ' ').trim();
+  const headNorm = normRole(head);
+  const headRole = normRole(head);
   const roleHit = (p.preferences?.roles || []).some(role => {
-    const key = String(role || '').toLowerCase().trim();
+    const key = normRole(role);
     if (key.length < 3) return false;
     const glued = key.replace(/[^a-z0-9]+/g, '');
-    return head.includes(key) || (glued.length > 3 && headGlued.includes(glued));
+    const toks = key.split(' ').filter(t => t.length > 2);
+    const allTokens = toks.length > 0 && toks.every(t => new RegExp(`(^|[^a-z0-9])${t}`).test(headNorm));
+    return head.includes(key) || headRole.includes(key) || allTokens || (glued.length > 3 && headGlued.includes(glued));
   });
   const core = roleHit || (CV_TITLE.test(head) && !NON_CV_TITLE.test(head));
   const offStack = OFF_STACK.test(head) && !/\b(python|ai|ml|llm|fastapi|django)\b/.test(head);
@@ -373,7 +386,62 @@ export async function xPosts(query, { max = 12 } = {}) {
 
 // ── LinkedIn job listings (freshest) ─────────────────────────────────────────
 // geo 92000000 = Worldwide. tpr seconds: 86400 = 24h.
-export async function liJobs(query, { easyOnly = true, tpr = 86400, geoId = '92000000', pages = 2 } = {}) {
+// LinkedIn's AI search page (`/jobs/search-results/`) dropped the stable
+// `li[data-occludable-job-id]` markup, so read the public job-search API from the
+// logged-in page (cookies apply) and fall back to the legacy DOM scrape.
+function decodeHtml(s = '') {
+  return String(s)
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"').replace(/&#0?39;|&#x27;/gi, "'").replace(/&nbsp;/g, ' ')
+    .replace(/\s+/g, ' ').trim();
+}
+
+export function parseGuestCards(html = '') {
+  const blocks = String(html).split(/<li[\s>]/i).slice(1);
+  const cards = [];
+  for (const b of blocks) {
+    const id = (/jobPosting:(\d+)/.exec(b) || [])[1];
+    const title = decodeHtml((/base-search-card__title[^>]*>([\s\S]*?)<\/h3>/i.exec(b) || [])[1] || '');
+    if (!id || !title) continue;
+    cards.push({
+      id,
+      title,
+      company: decodeHtml((/base-search-card__subtitle[^>]*>([\s\S]*?)<\/h4>/i.exec(b) || [])[1] || ''),
+      location: decodeHtml((/job-search-card__location[^>]*>([\s\S]*?)<\/span>/i.exec(b) || [])[1] || ''),
+      date: (/<time[^>]*datetime="([^"]+)"/i.exec(b) || [])[1] || '',
+      ago: decodeHtml((/<time[^>]*>([\s\S]*?)<\/time>/i.exec(b) || [])[1] || ''),
+    });
+  }
+  return cards;
+}
+
+async function liJobsViaApi(page, { query, tpr, easyOnly, location = '', pages = 2 }) {
+  const cards = [];
+  // fetch() must run on a linkedin.com origin or the request is blocked by CORS.
+  if (!/^https:\/\/([a-z0-9-]+\.)?linkedin\.com\//i.test(page.url())) {
+    await page.goto('https://www.linkedin.com/jobs/', { waitUntil: 'domcontentloaded', timeout: 40000 });
+    await SLEEP(1200);
+  }
+  for (let pg = 0; pg < pages; pg++) {
+    const qs = new URLSearchParams({ keywords: query, f_TPR: `r${tpr}`, f_WT: '2', start: String(pg * 10) });
+    if (easyOnly) qs.set('f_AL', 'true');
+    if (location) qs.set('location', location);
+    const url = 'https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search?' + qs.toString();
+    const html = await page.evaluate(async (u) => {
+      const r = await fetch(u, { credentials: 'include' });
+      return r.ok ? await r.text() : '';
+    }, url).catch(() => '');
+    const batch = parseGuestCards(html);
+    if (!batch.length) break;
+    cards.push(...batch);
+    if (batch.length < 10) break;
+    await SLEEP(800);
+  }
+  return cards;
+}
+
+export async function liJobs(query, { easyOnly = true, tpr = 86400, geoId = '92000000', pages = 2, location = '' } = {}) {
   console.error('[scrape] liJobs: starting, query=' + query);
   let ctx;
   try { ctx = await getContext(); } catch (e) {
@@ -388,6 +456,25 @@ export async function liJobs(query, { easyOnly = true, tpr = 86400, geoId = '920
   page.setDefaultTimeout(30000);
   const out = [];
   try {
+    const prof = getProfile?.() || {};
+    const place = location || (String(prof?.preferences?.locationScope || '').toLowerCase() === 'pakistan' ? 'Pakistan' : '');
+    const apiCards = await liJobsViaApi(page, { query, tpr, easyOnly, location: place, pages });
+    for (const c of apiCards) {
+      const s = score(`${c.title} ${c.company} ${c.location}`, c.title);
+      out.push({
+        source: easyOnly ? 'linkedin_easy' : 'linkedin_jobs', role: c.title, company: c.company, location: c.location,
+        url: `https://www.linkedin.com/jobs/view/${c.id}/`, applyUrl: `https://www.linkedin.com/jobs/view/${c.id}/`,
+        postedAt: c.date ? new Date(c.date + 'T00:00:00Z').toISOString() : relToIso(c.ago) || '',
+        postedRaw: c.ago, channel: easyOnly ? 'easy_apply' : 'form', portal: 'linkedin',
+        relevance: s.rel, skip: s.skip, skipWhy: s.why, alreadyApplied: false, remote: true,
+      });
+    }
+    if (apiCards.length) {
+      const seen = new Set();
+      const uniq = out.filter(j => !seen.has(j.url) && seen.add(j.url));
+      console.error(`[scrape] liJobs: ${uniq.length} unique listings (api)`);
+      return { ok: true, leads: uniq, detail: `${uniq.length} listings` };
+    }
     for (let pg = 0; pg < pages; pg++) {
       const u = `https://www.linkedin.com/jobs/search/?keywords=${encodeURIComponent(query)}&f_WT=2${easyOnly ? '&f_AL=true' : ''}&f_TPR=r${tpr}&sortBy=DD${geoId ? '&geoId=' + geoId : ''}&start=${pg * 25}`;
       await page.goto(u, { waitUntil: 'domcontentloaded', timeout: 40000 });
@@ -422,6 +509,339 @@ export async function liJobs(query, { easyOnly = true, tpr = 86400, geoId = '920
   } catch (e) {
     console.error('[scrape] liJobs: error:', e.message);
     return { ok: false, leads: out, detail: e.message.slice(0, 200) };
+  } finally { await page.close().catch(() => {}); }
+}
+
+// ── Best-match sweep: many queries, dedup, off-stack filter, detail verify ───
+const OFF_STACK_TITLE = /\b(java(?!script)|\.net|c#|c\+\+|ruby|rails|laravel|ios|android|swift|kotlin|flutter|angular|react native|unity|servicenow|salesforce|sap|sharepoint|wpf|asp\.net|magento|drupal|wordpress|sdet|data (?:engineer|scientist|architect)|machine learning|ml engineer|marketing|seo|sales|recruiter|accountant|designer|manager|director|executive|specialist|strategist|architect)\b/i;
+const WEB_TITLE = /\b(react(?:\.?js)?|next(?:\.?js)?|remix|node(?:\.?js)?|javascript|typescript|mern|frontend|front[- ]end|full[- ]?stack|web developer|web engineer|software (?:engineer|developer))\b/i;
+
+function bestJobQueries(p) {
+  const roles = (p.preferences?.roles || []).map(r => String(r).toLowerCase().trim()).filter(Boolean);
+  const stack = ['react developer', 'react.js developer', 'next.js developer', 'node.js developer',
+    'javascript developer', 'typescript developer', 'mern stack developer', 'frontend engineer',
+    'full stack engineer', 'web developer', 'software engineer'];
+  const seen = new Set();
+  return [...roles, ...stack].filter(q => q && !seen.has(q) && seen.add(q)).slice(0, 12);
+}
+
+async function liBestFetch(page, query, start, easyOnly, tpr = 86400) {
+  const qs = new URLSearchParams({ keywords: query, f_TPR: 'r' + tpr, start: String(start) });
+  if (easyOnly) qs.set('f_AL', 'true');
+  const url = 'https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search?' + qs.toString();
+  const html = await page.evaluate(async (u) => {
+    const r = await fetch(u, { credentials: 'include' });
+    return r.ok ? await r.text() : '';
+  }, url).catch(() => '');
+  return parseGuestCards(html);
+}
+
+async function liEnrich(page, url) {
+  try {
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    // The detail pane hydrates late; without this wait the page text is just nav/footer.
+    await page.waitForFunction(() => /About the job/i.test(document.body?.innerText || ''), null, { timeout: 9000 }).catch(() => {});
+    await SLEEP(300);
+    return await page.evaluate(() => {
+      const text = (document.body?.innerText || '').replace(/[ \t]+/g, ' ');
+      const i = text.search(/About the job/i);
+      return {
+        easy: /\bEasy Apply\b/i.test(text),
+        closed: /No longer accepting applications|job is no longer available/i.test(text),
+        about: (i >= 0 ? text.slice(i + 'About the job'.length) : text).slice(0, 3500),
+      };
+    });
+  } catch { return { easy: false, closed: false, about: '' }; }
+}
+
+export async function liBest({ queries, tpr = 86400, pages = 2, deep = false, enrichMax = 12, limit = 15 } = {}) {
+  console.error('[scrape] liBest: starting');
+  let ctx;
+  try { ctx = await getContext(); } catch (e) { return { ok: false, leads: [], detail: `browser error: ${e.message}` }; }
+  let page;
+  try { page = await ctx.newPage(); } catch (e) { return { ok: false, leads: [], detail: `new page error: ${e.message}` }; }
+  page.setDefaultTimeout(30000);
+  const prof = getProfile();
+  const qs = queries?.length ? queries : bestJobQueries(prof);
+  try {
+    await page.goto('https://www.linkedin.com/jobs/', { waitUntil: 'domcontentloaded', timeout: 40000 });
+    await SLEEP(1000);
+
+    const byId = new Map();
+    for (const q of qs) {
+      for (let pg = 0; pg < pages; pg++) {
+        const batch = await liBestFetch(page, q, pg * 10, true, tpr);
+        if (!batch.length) break;
+        for (const c of batch) if (!byId.has(c.id)) byId.set(c.id, { ...c, query: q });
+        if (batch.length < 10) break;
+        await SLEEP(400);
+      }
+    }
+
+    // Collapse reposts of the same role across cities (Smart Working posts per-city copies).
+    const byKey = new Map();
+    for (const c of byId.values()) {
+      const key = `${c.company}|${c.title}`.toLowerCase().replace(/[^a-z0-9|]+/g, ' ').replace(/\s+/g, ' ').trim();
+      const cur = byKey.get(key);
+      if (!cur || (c.location && !cur.location)) byKey.set(key, c);
+    }
+
+    const terms = new Set([...(prof.skills || []), ...(prof.preferences?.keywords || [])].map(s => String(s).toLowerCase()));
+    const softReasons = new Set(['title not aligned with CV target roles', 'not a web/frontend role']);
+    const cand = [];
+    for (const c of byKey.values()) {
+      const why = [];
+      const title = c.title || '';
+      if (OFF_STACK_TITLE.test(title)) why.push('off-stack title');
+      const sk = score(`${title} ${c.company} ${c.location}`, title);
+      if (sk.skip && sk.why && !softReasons.has(sk.why)) why.push(sk.why);
+      cand.push({ ...c, webTitle: WEB_TITLE.test(title), why });
+    }
+    const dropStats = {};
+    const drop = c => { for (const r of c.why) dropStats[r] = (dropStats[r] || 0) + 1; };
+    let keep = cand.filter(c => !c.why.length);
+    const ts = c => Date.parse(relToIso(c.ago) || (c.date ? c.date + 'T00:00:00Z' : '')) || 0;
+    keep.sort((a, b) => ts(b) - ts(a));
+
+    if (deep) {
+      for (const c of keep.slice(0, enrichMax)) {
+        const info = await liEnrich(page, `https://www.linkedin.com/jobs/view/${c.id}/`);
+        c.easy = info.easy;
+        c.closed = info.closed;
+        c.about = info.about;
+        // A listing fetched with f_AL=true is Easy Apply; only a confirmed closure disqualifies.
+        if (info.closed) c.why.push('no longer accepting applications');
+        const t = (info.about || '').toLowerCase();
+        c.stackHits = [...terms].filter(term => term.length > 2 && t.includes(term)).length;
+        if (!c.webTitle && c.stackHits < 2) c.why.push('description is not a web/frontend role');
+        await SLEEP(400);
+      }
+      for (const c of keep.slice(enrichMax)) if (!c.webTitle) c.why.push('generic title, not verified');
+    } else {
+      for (const c of keep) if (!c.webTitle) c.why.push('not a web/frontend role');
+    }
+    keep.forEach(drop);
+
+    const leads = [];
+    for (const c of keep) {
+      if (c.why.length) continue;
+      const title = c.title || '';
+      const roleScore = c.webTitle ? 1 : 0.5;
+      const descScore = c.about ? Math.min(1, (c.stackHits || 0) / 10) : 0.4;
+      const fresh = ts(c) && Date.now() - ts(c) < 24 * 3600e3 ? 1 : 0.75;
+      const rel = +(0.45 * roleScore + 0.35 * descScore + 0.2 * fresh + (c.easy !== false ? 0.05 : 0)).toFixed(2);
+      leads.push({
+        source: 'linkedin_best', role: title, company: c.company, location: c.location,
+        url: `https://www.linkedin.com/jobs/view/${c.id}/`, applyUrl: `https://www.linkedin.com/jobs/view/${c.id}/`,
+        postedAt: relToIso(c.ago) || (c.date ? new Date(c.date + 'T00:00:00Z').toISOString() : ''),
+        postedRaw: c.ago, channel: c.easy === false ? 'form' : 'easy_apply', portal: 'linkedin',
+        relevance: Math.min(1, rel), skip: false, skipWhy: '', alreadyApplied: false,
+        remote: REMOTE.test(`${c.location} ${c.about || ''}`), description: (c.about || '').slice(0, 2000),
+      });
+    }
+    leads.sort((a, b) => b.relevance - a.relevance || new Date(b.postedAt || 0) - new Date(a.postedAt || 0));
+    const top = leads.slice(0, limit);
+    console.error(`[scrape] liBest: ${qs.length} queries → ${byId.size} ids → ${byKey.size} roles → ${top.length} leads; drops ${JSON.stringify(dropStats)}`);
+    return { ok: true, leads: top, detail: `${top.length} ranked roles from ${byKey.size} unique in the past 24h`, stats: { queries: qs.length, ids: byId.size, roles: byKey.size, kept: top.length, drops: dropStats } };
+  } catch (e) {
+    console.error('[scrape] liBest: error:', e.message);
+    return { ok: false, leads: [], detail: e.message.slice(0, 200) };
+  } finally { await page.close().catch(() => {}); }
+}
+
+// ── Indeed sweep: date-sorted search, dedup, description verify ───────────────
+export function indeedBase(profile = {}) {
+  const c = String(profile.country || profile.preferences?.country || '').toLowerCase();
+  return /\bpakistan\b|\bpk\b/.test(c) ? 'https://pk.indeed.com' : 'https://www.indeed.com';
+}
+
+async function indeedReadCards(page) {
+  return page.evaluate(() => {
+    const out = [];
+    const seen = new Set();
+    for (const a of document.querySelectorAll('a[data-jk]')) {
+      const id = a.getAttribute('data-jk');
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      const card = a.closest('li') || a.closest('.job_seen_beacon') || a.closest('td.resultContent') || a.parentElement;
+      const text = (card?.innerText || '').replace(/\s+/g, ' ');
+      const title = (a.innerText || a.getAttribute('aria-label') || '')
+        .replace(/^full details of /i, '').replace(/\s+/g, ' ').trim();
+      out.push({
+        id, title,
+        company: card?.querySelector('[data-testid="company-name"]')?.innerText?.trim() || '',
+        location: card?.querySelector('[data-testid="text-location"]')?.innerText?.trim() || '',
+        salary: card?.querySelector('.salary-snippet-container')?.innerText?.replace(/\s+/g, ' ').trim() || '',
+        snippet: card?.querySelector('.job-snippet')?.innerText?.replace(/\s+/g, ' ').trim() || '',
+        easy: /Easily apply/i.test(text),
+        urgent: /Urgently hiring/i.test(text),
+      });
+    }
+    const body = document.body?.innerText || '';
+    return {
+      cards: out,
+      total: (body.match(/([\d,]+)\s+jobs?/i) || [])[1] || '',
+      check: /Additional Verification|verify you are human|Just a moment/i.test(body),
+    };
+  });
+}
+
+async function indeedEnrich(page, url) {
+  try {
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 35000 });
+    await page.waitForFunction(() => (document.querySelector('#jobDescriptionText')?.innerText || '').length > 80, null, { timeout: 9000 }).catch(() => {});
+    await SLEEP(300);
+    return await page.evaluate(() => {
+      const t = (document.body?.innerText || '').replace(/[ \t]+/g, ' ');
+      let desc = document.querySelector('#jobDescriptionText')?.innerText || '';
+      if (!desc) {
+        const i = t.search(/Full job description/i);
+        if (i >= 0) desc = t.slice(i + 'Full job description'.length);
+      }
+      const posted = (t.match(/Posted\s+((?:\d+\s+\w+\s+ago)|today|just posted)/i) || [])[1]
+        || (t.match(/(\d+\s+days?\s+ago)/i) || [])[1] || '';
+      return {
+        description: desc.replace(/\s+/g, ' ').slice(0, 4000),
+        postedRaw: posted,
+        easy: /Easily apply/i.test(t) || /\bApply now\b/i.test(t),
+        companySite: /Apply on company site/i.test(t),
+        closed: /no longer accepting applications|this job has expired|job has been removed/i.test(t),
+        verify: /Additional Verification|verify you are human|Just a moment/i.test(t),
+      };
+    });
+  } catch { return { description: '', postedRaw: '', easy: false, applyNow: false, closed: false, verify: false }; }
+}
+
+function indeedQueries(p) {
+  const roles = (p.preferences?.roles || []).map(r => String(r).toLowerCase().replace(/\./g, '').replace(/\s+/g, ' ').trim());
+  const stack = ['full stack developer', 'frontend developer', 'react developer', 'next js developer',
+    'node js developer', 'mern stack developer', 'javascript developer', 'web developer'];
+  const seen = new Set();
+  return [...roles, ...stack]
+    .map(q => q.replace(/\breactjs\b/g, 'react js').replace(/\bnextjs\b/g, 'next js').replace(/\bnodejs\b/g, 'node js'))
+    .filter(q => q && !seen.has(q) && seen.add(q)).slice(0, 8);
+}
+
+export async function indeedBest({ queries, fromage = 3, pages = 1, deep = true, enrichMax = 12, limit = 20, location } = {}) {
+  console.error('[scrape] indeedBest: starting');
+  let ctx;
+  try { ctx = await getContext(); } catch (e) { return { ok: false, leads: [], detail: `browser error: ${e.message}` }; }
+  let page;
+  try { page = await ctx.newPage(); } catch (e) { return { ok: false, leads: [], detail: `new page error: ${e.message}` }; }
+  page.setDefaultTimeout(45000);
+  const prof = getProfile();
+  const base = indeedBase(prof);
+  const qs = queries?.length ? queries : indeedQueries(prof);
+  const countryName = String(prof.country || 'Pakistan').replace(/^./, c => c.toUpperCase());
+  const scope = String(prof.preferences?.locationScope || '').toLowerCase();
+  const countryWide = !scope || scope === 'country' || scope === countryName.toLowerCase();
+  const city = location || (countryWide
+    ? countryName
+    : String(prof.location || '').split(',')[0].trim())
+    || (prof.preferences?.locations || []).find(l => !/\bremote\b/i.test(l)) || '';
+  try {
+    const byId = new Map();
+    let checked = false;
+    for (const q of qs) {
+      for (let pg = 0; pg < pages; pg++) {
+        const u = new URL(base + '/jobs');
+        u.searchParams.set('q', q);
+        u.searchParams.set('fromage', String(fromage));
+        u.searchParams.set('sort', 'date');
+        if (city) u.searchParams.set('l', city);
+        if (pg) u.searchParams.set('start', String(pg * 10));
+        await page.goto(u.toString(), { waitUntil: 'domcontentloaded', timeout: 45000 }).catch(() => {});
+        await page.waitForSelector('a[data-jk]', { timeout: 12000 }).catch(() => {});
+        await SLEEP(1800);
+        const res = await indeedReadCards(page);
+        if (res.check) {
+          checked = true;
+          if (!byId.size) return { ok: false, leads: [], detail: 'indeed verification page — slow down and sign in to Indeed in the normal window' };
+          break;
+        }
+        for (const c of res.cards) if (!byId.has(c.id)) byId.set(c.id, { ...c, query: q });
+        await SLEEP(900);
+      }
+      if (checked) break;
+      await SLEEP(2000);
+    }
+
+    const byKey = new Map();
+    for (const c of byId.values()) {
+      const key = `${c.company}|${c.title}`.toLowerCase().replace(/[^a-z0-9|]+/g, ' ').replace(/\s+/g, ' ').trim();
+      if (!byKey.has(key)) byKey.set(key, c);
+    }
+
+    const terms = new Set([...(prof.skills || []), ...(prof.preferences?.keywords || [])].map(s => String(s).toLowerCase()));
+    const softReasons = new Set(['title not aligned with CV target roles']);
+    const cand = [];
+    for (const c of byKey.values()) {
+      const why = [];
+      const title = c.title || '';
+      if (OFF_STACK_TITLE.test(title)) why.push('off-stack title');
+      if (/\b(intern(?:ship)?|trainee|fresher|entry[- ]level)\b/i.test(title)) why.push('intern/junior');
+      const sk = score(`${title} ${c.company} ${c.location} ${c.salary} ${c.snippet}`, title);
+      if (sk.skip && sk.why && !softReasons.has(sk.why)) why.push(sk.why);
+      cand.push({ ...c, webTitle: WEB_TITLE.test(title), why });
+    }
+    const dropStats = {};
+    for (const c of cand) for (const r of c.why) dropStats[r] = (dropStats[r] || 0) + 1;
+    let keep = cand.filter(c => !c.why.length);
+
+    if (deep) {
+      for (const c of keep.slice(0, enrichMax)) {
+        const info = await indeedEnrich(page, `${base}/viewjob?jk=${c.id}`);
+        c.description = info.description;
+        c.easy = c.easy || info.easy;
+        c.postedRaw = info.postedRaw || c.postedRaw || '';
+        if (info.closed) c.why.push('no longer accepting applications');
+        if (info.verify) c.why.push('indeed verification required — needs the normal window');
+        const t = (info.description || '').toLowerCase();
+        c.stackHits = [...terms].filter(term => term.length > 2 && t.includes(term)).length;
+        if (!c.webTitle && c.stackHits < 2) c.why.push('description is not a web/frontend role');
+        const webHits = new Set(t.match(/\b(?:react(?:\.?js)?|next(?:\.?js)?|node(?:\.?js)?|javascript|typescript|mern|rest(?:ful)? api|express(?:\.js)?|mongodb|postgres(?:ql)?|mysql|redux|tailwind|html5?|css3?)\b/g) || []).size;
+        const offHits = new Set(t.match(/\b(?:sharepoint|c#|\.net|asp\.net|wpf|angular|java|spring(?: boot)?|php|laravel|wordpress|magento|drupal|ruby on rails|rails|django|flask|kotlin|swift|flutter|react native|unity|salesforce|servicenow|mainframe|cobol)\b/g) || []).size;
+        if (offHits >= 2 && webHits < 2) c.why.push('description is off-stack');
+        const yrs = Math.max(0, ...[...t.matchAll(/(\d{1,2})\s*\+?\s*(?:years?|yrs?)\s+(?:of\s+)?(?:relevant\s+|professional\s+|hands-on\s+|proven\s+)?experience/g)].map(m => +m[1]));
+        if (yrs >= 7) c.why.push(`requires ${yrs}+ years of experience`);
+        await SLEEP(400);
+      }
+      for (const c of keep.slice(enrichMax)) if (!c.webTitle) c.why.push('generic title, not verified');
+    } else {
+      for (const c of keep) if (!c.webTitle) c.why.push('not a web/frontend role');
+    }
+    for (const c of keep) for (const r of c.why) dropStats[r] = (dropStats[r] || 0) + 1;
+
+    const leads = [];
+    for (const c of keep) {
+      if (c.why.length) continue;
+      const roleScore = c.webTitle ? 1 : 0.5;
+      const descScore = c.description ? Math.min(1, (c.stackHits || 0) / 10) : 0.4;
+      const postedAt = relToIso(c.postedRaw) || '';
+      const ageH = postedAt ? (Date.now() - Date.parse(postedAt)) / 3600e3 : null;
+      const fresh = ageH == null ? (deep ? 0.8 : 0.7) : ageH <= 24 ? 1 : ageH <= 72 ? 0.85 : 0.7;
+      const rel = +(0.45 * roleScore + 0.35 * descScore + 0.2 * fresh + (c.easy ? 0.05 : 0)).toFixed(2);
+      leads.push({
+        source: 'indeed', role: c.title, company: c.company, location: c.location,
+        url: `${base}/viewjob?jk=${c.id}`, applyUrl: `${base}/viewjob?jk=${c.id}`,
+        postedAt, postedRaw: c.postedRaw || `within ${fromage} days`,
+        channel: c.easy ? 'easy_apply' : 'form', portal: 'indeed',
+        relevance: Math.min(1, rel), skip: false, skipWhy: '', alreadyApplied: false,
+        remote: REMOTE.test(`${c.location} ${c.description || ''}`),
+        salary: c.salary || '', description: (c.description || c.snippet || '').slice(0, 2000),
+      });
+    }
+    leads.sort((a, b) => b.relevance - a.relevance || Date.parse(b.postedAt || 0) - Date.parse(a.postedAt || 0));
+    const top = leads.slice(0, limit);
+    console.error(`[scrape] indeedBest: ${qs.length} queries → ${byId.size} ids → ${byKey.size} roles → ${top.length} leads; drops ${JSON.stringify(dropStats)}`);
+    return {
+      ok: true, leads: top,
+      detail: `${top.length} ranked Indeed roles from the last ${fromage} days (${byKey.size} unique)`,
+      stats: { queries: qs.length, ids: byId.size, roles: byKey.size, kept: top.length, drops: dropStats },
+    };
+  } catch (e) {
+    console.error('[scrape] indeedBest: error:', e.message);
+    return { ok: false, leads: [], detail: e.message.slice(0, 200) };
   } finally { await page.close().catch(() => {}); }
 }
 
