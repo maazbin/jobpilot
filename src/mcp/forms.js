@@ -657,6 +657,9 @@ async function clickAshbyYesNo(page) {
     if (!pick) continue;
     const btn = entry.locator('.ashby-application-form-input-yesno-option').filter({ hasText: new RegExp(`^\\s*${pick.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') }).first();
     if (await btn.isVisible().catch(() => false)) {
+      // Ashby renders these options as type=submit, so a normal click sends the
+      // form before the choice is stored and the page comes back with "Missing entry".
+      await btn.evaluate(el => { el.type = 'button'; }).catch(() => {});
       await btn.click({ timeout: 2000 }).catch(() => {});
       await SLEEP(200);
     }
