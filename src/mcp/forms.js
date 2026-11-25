@@ -605,7 +605,38 @@ async function fillAll(page, unknown, job = {}) {
   // by its visible label so submit validation does not bounce with "Missing entry".
   await clickRoleRadios(page);
   await clickAshbyYesNo(page);
+  await fillAshbyText(page);
   return fields.length;
+}
+
+/** Ashby text and textarea widgets are React-controlled. The data-jf mark from the
+ *  first scan is dropped when an earlier field re-renders the form, so a later
+ *  Country or long-answer field stays empty. Write it from the stable field entry. */
+async function fillAshbyText(page) {
+  const entries = page.locator('.ashby-application-form-field-entry');
+  const n = await entries.count().catch(() => 0);
+  for (let i = 0; i < n; i++) {
+    const entry = entries.nth(i);
+    const input = entry.locator('input.ashby-application-form-input-text, textarea.ashby-application-form-input-textarea').first();
+    if (!(await input.count().catch(() => 0))) continue;
+    if (((await input.inputValue().catch(() => '')) || '').trim()) continue;
+    const q = ((await entry.locator('.ashby-application-form-question-title').innerText().catch(() => '')) || '').replace(/\s+/g, ' ').trim();
+    if (!q) continue;
+    const isArea = await input.evaluate(el => el.tagName === 'TEXTAREA').catch(() => false);
+    let v = textAnswer(q);
+    if ((v == null || v === '') && isArea) v = coverText(getProfile());
+    if (v == null || v === '') continue;
+    const value = String(v);
+    await input.fill(value).catch(() => {});
+    if (((await input.inputValue().catch(() => '')) || '').trim()) continue;
+    await input.evaluate((el, next) => {
+      const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+      const desc = Object.getOwnPropertyDescriptor(proto, 'value');
+      desc?.set?.call(el, next);
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+    }, value).catch(() => {});
+  }
 }
 
 /** Prefer a real user-gesture click on the label/control so React-controlled radios update. */
